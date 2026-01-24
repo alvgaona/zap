@@ -2,6 +2,7 @@
 #
 # Usage:
 #   make                    # Build all examples
+#   make test               # Build and run tests
 #   make run                # Build and run all examples
 #   make run E=quick        # Build and run specific example
 #   make run E=micro ARGS="--env --histogram"
@@ -15,10 +16,15 @@ LDFLAGS ?= -lm
 
 BUILD_DIR := build
 EXAMPLES_DIR := examples
+TESTS_DIR := tests
 
 # All example sources
 EXAMPLES := $(wildcard $(EXAMPLES_DIR)/*.c)
 BINARIES := $(patsubst $(EXAMPLES_DIR)/%.c,$(BUILD_DIR)/%,$(EXAMPLES))
+
+# Test sources
+TEST_SRCS := $(wildcard $(TESTS_DIR)/*.c)
+TEST_BIN := $(BUILD_DIR)/test_zap
 
 # Default target
 all: $(BINARIES)
@@ -30,6 +36,15 @@ $(BUILD_DIR):
 # Compile examples
 $(BUILD_DIR)/%: $(EXAMPLES_DIR)/%.c zap.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I. -o $@ $< $(LDFLAGS)
+
+# Build tests
+$(TEST_BIN): $(TEST_SRCS) zap.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(TEST_SRCS) $(LDFLAGS)
+
+# Run tests
+.PHONY: test
+test: $(TEST_BIN)
+	@./$(TEST_BIN)
 
 # Run examples
 .PHONY: run
@@ -77,6 +92,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all          Build all examples (default)"
+	@echo "  test         Build and run tests"
 	@echo "  run          Build and run examples"
 	@echo "  list         List available examples"
 	@echo "  clean        Remove build artifacts"
