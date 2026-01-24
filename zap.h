@@ -2873,17 +2873,28 @@ void zap_compare_end(zap_compare_ctx_t* ctx) {
                        zap__c_cyan(), tput_buf, zap__c_reset());
             }
 
-            // Speedup vs baseline (only for non-baseline implementations)
-            if (!is_baseline && ctx->results[baseline_idx].valid) {
-                double speedup = ctx->results[baseline_idx].stats.mean / r->stats.mean;
+            // Speedup vs all other implementations
+            for (size_t j = 0; j < ctx->impl_count; j++) {
+                if (j == i || !ctx->results[j].valid) continue;
+
+                double speedup = ctx->results[j].stats.mean / r->stats.mean;
+                const char* other_name = ctx->results[j].name;
+
+                // Calculate padding for alignment
+                int name_len = (int)strlen(other_name);
+                int padding = 12 - name_len;
+                if (padding < 1) padding = 1;
+
                 if (speedup >= 1.0) {
-                    printf("    %svs %s:%s          %s%.2fx faster%s\n",
-                           zap__c_dim(), ctx->results[baseline_idx].name, zap__c_reset(),
+                    printf("    %svs %s:%s%*s%s%.2fx faster%s\n",
+                           zap__c_dim(), other_name, zap__c_reset(),
+                           padding, "",
                            zap__c_green(), speedup, zap__c_reset());
                 } else {
                     double pct_slower = (1.0 / speedup - 1.0) * 100.0;
-                    printf("    %svs %s:%s          %s%.2fx (%.0f%% slower)%s\n",
-                           zap__c_dim(), ctx->results[baseline_idx].name, zap__c_reset(),
+                    printf("    %svs %s:%s%*s%s%.2fx (%.0f%% slower)%s\n",
+                           zap__c_dim(), other_name, zap__c_reset(),
+                           padding, "",
                            zap__c_red(), speedup, pct_slower, zap__c_reset());
                 }
             }
