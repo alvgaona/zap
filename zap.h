@@ -63,21 +63,35 @@ extern "C" {
 /* TYPES                                                                      */
 /* ========================================================================== */
 
+/* Throughput type */
+typedef enum zap_throughput_type {
+    ZAP_THROUGHPUT_NONE = 0,
+    ZAP_THROUGHPUT_BYTES,
+    ZAP_THROUGHPUT_ELEMENTS
+} zap_throughput_type_t;
+
 /* Statistics results */
 typedef struct zap_stats {
     double mean;
-    double median;
+    double median;           /* Same as p50 */
     double std_dev;
     double mad;              /* Median Absolute Deviation */
     double ci_lower;         /* Confidence interval lower bound */
     double ci_upper;         /* Confidence interval upper bound */
     double min;              /* Minimum sample value */
     double max;              /* Maximum sample value */
+    double p75;              /* 75th percentile */
+    double p90;              /* 90th percentile */
+    double p95;              /* 95th percentile */
+    double p99;              /* 99th percentile */
     size_t outliers_low;     /* Number of low outliers */
     size_t outliers_high;    /* Number of high outliers */
     size_t sample_count;
     size_t iterations;       /* Iterations per sample */
     double* samples;         /* Pointer to samples for histogram */
+    /* Throughput info */
+    zap_throughput_type_t throughput_type;
+    size_t throughput_value; /* Bytes or elements per iteration */
 } zap_stats_t;
 
 /* Per-benchmark configuration */
@@ -100,6 +114,9 @@ typedef struct criterion {
     bool        measuring;
     bool        status_printed;  /* Track if warmup/measuring status was shown */
     zap_bench_config_t config;
+    /* Throughput tracking */
+    zap_throughput_type_t throughput_type;
+    size_t throughput_value;
 } zap_t;
 
 /* Forward declaration for bencher */
@@ -181,9 +198,12 @@ typedef struct zap_comparison {
 typedef struct zap_config {
     const char*          baseline_path;
     const char*          filter;         /* Benchmark name filter pattern */
+    double               fail_threshold; /* Exit non-zero if regression > this % */
     bool                 save_baseline;
     bool                 compare;
     bool                 explicit_path;  /* User specified a custom path */
+    bool                 json_output;    /* Output results as JSON */
+    bool                 has_regression; /* Track if any benchmark regressed beyond threshold */
     zap_baseline_t baseline;
 } zap_config_t;
 
@@ -200,6 +220,7 @@ uint64_t zap_now_ns(void);
 /* Statistics functions */
 double zap_mean(const double* samples, size_t n);
 double zap_median(double* samples, size_t n);
+double zap_percentile(const double* sorted_samples, size_t n, double p);
 double zap_std_dev(const double* samples, size_t n, double mean);
 double zap_mad(double* samples, size_t n, double median);
 void   zap_confidence_interval(const double* samples, size_t n,
@@ -222,6 +243,8 @@ void zap_loop_end(zap_t* c);
 
 /* Reporting */
 void zap_report(const char* name, const zap_stats_t* stats);
+void zap_report_json(const char* name, const zap_stats_t* stats,
+                     const zap_comparison_t* cmp);
 void zap_report_group_start(const char* name);
 void zap_report_group_end(void);
 
@@ -255,6 +278,12 @@ void zap_bencher_iter_custom(zap_bencher_t* b,
                                    void (*routine)(void*),
                                    void (*teardown)(void*),
                                    void* user_data);
+
+/* Throughput configuration */
+void zap_set_throughput_bytes(zap_t* c, size_t bytes_per_iter);
+void zap_set_throughput_elements(zap_t* c, size_t elements_per_iter);
+void zap_bencher_set_throughput_bytes(zap_bencher_t* b, size_t bytes_per_iter);
+void zap_bencher_set_throughput_elements(zap_bencher_t* b, size_t elements_per_iter);
 
 /* Baseline management */
 void zap_baseline_init(zap_baseline_t* b);
@@ -397,13 +426,14 @@ void zap_status_clear(void);
  *   --save-baseline [FILE]  Save results to baseline file
  *   --baseline [FILE]       Compare against baseline file
  *   --compare [FILE]        Alias for --baseline
+ *   --json                  Output results as JSON
+ *   --fail-threshold PCT    Exit with code 1 if regression > PCT%
  */
 #define ZAP_MAIN(...) \
     int main(int argc, char** argv) { \
         zap_parse_args(argc, argv); \
         ZAP__MAP(ZAP__RUN_GROUP, __VA_ARGS__) \
-        zap_finalize(); \
-        return 0; \
+        return zap_finalize(); \
     }
 
 #define ZAP__RUN_GROUP(group) zap_run_group_internal(&group);
@@ -477,6 +507,19 @@ double zap_median(double* samples, size_t n) {
         return (samples[n/2 - 1] + samples[n/2]) / 2.0;
     }
     return samples[n/2];
+}
+
+double zap_percentile(const double* sorted_samples, size_t n, double p) {
+    if (n == 0) return 0.0;
+    if (n == 1) return sorted_samples[0];
+
+    double rank = (p / 100.0) * (n - 1);
+    size_t lower = (size_t)rank;
+    size_t upper = lower + 1;
+    if (upper >= n) upper = n - 1;
+
+    double frac = rank - (double)lower;
+    return sorted_samples[lower] * (1.0 - frac) + sorted_samples[upper] * frac;
 }
 
 double zap_std_dev(const double* samples, size_t n, double mean) {
@@ -574,10 +617,16 @@ zap_stats_t zap_compute_stats(double* samples, size_t n) {
     memcpy(sorted, samples, n * sizeof(double));
 
     stats.mean = zap_mean(samples, n);
-    stats.median = zap_median(sorted, n);
+    stats.median = zap_median(sorted, n);  /* sorted is now sorted */
     stats.std_dev = zap_std_dev(samples, n, stats.mean);
 
-    /* Restore sorted for MAD calculation */
+    /* Calculate percentiles from sorted data */
+    stats.p75 = zap_percentile(sorted, n, 75.0);
+    stats.p90 = zap_percentile(sorted, n, 90.0);
+    stats.p95 = zap_percentile(sorted, n, 95.0);
+    stats.p99 = zap_percentile(sorted, n, 99.0);
+
+    /* Need fresh copy for MAD calculation (it sorts internally) */
     memcpy(sorted, samples, n * sizeof(double));
     stats.mad = zap_mad(sorted, n, stats.median);
 
@@ -628,6 +677,7 @@ static int zap__check_tty(void) {
 }
 
 void zap_status_warmup(const char* name) {
+    if (zap_g_config.json_output) return;  /* No status in JSON mode */
     if (zap__check_tty()) {
         /* TTY: overwrite in place */
         printf("\r\033[K" ZAP_COLOR_DIM "  Warming up " ZAP_COLOR_RESET
@@ -641,6 +691,7 @@ void zap_status_warmup(const char* name) {
 }
 
 void zap_status_measuring(const char* name) {
+    if (zap_g_config.json_output) return;  /* No status in JSON mode */
     if (zap__check_tty()) {
         /* TTY: overwrite in place */
         printf("\r\033[K" ZAP_COLOR_DIM "  Measuring  " ZAP_COLOR_RESET
@@ -805,6 +856,45 @@ static void zap__format_time_short(double ns, char* buf, size_t bufsize) {
     }
 }
 
+/* Format throughput: bytes/sec or elements/sec */
+static void zap__format_throughput(double mean_ns, size_t value,
+                                   zap_throughput_type_t type,
+                                   char* buf, size_t bufsize) {
+    if (type == ZAP_THROUGHPUT_NONE || value == 0 || mean_ns <= 0) {
+        buf[0] = '\0';
+        return;
+    }
+
+    /* Calculate per-second rate: value / (mean_ns / 1e9) = value * 1e9 / mean_ns */
+    double per_sec = (double)value * 1e9 / mean_ns;
+
+    if (type == ZAP_THROUGHPUT_BYTES) {
+        /* Format as human-readable bytes/sec */
+        if (per_sec >= 1e12) {
+            snprintf(buf, bufsize, "%.2f TB/s", per_sec / 1e12);
+        } else if (per_sec >= 1e9) {
+            snprintf(buf, bufsize, "%.2f GB/s", per_sec / 1e9);
+        } else if (per_sec >= 1e6) {
+            snprintf(buf, bufsize, "%.2f MB/s", per_sec / 1e6);
+        } else if (per_sec >= 1e3) {
+            snprintf(buf, bufsize, "%.2f KB/s", per_sec / 1e3);
+        } else {
+            snprintf(buf, bufsize, "%.2f B/s", per_sec);
+        }
+    } else {
+        /* Format as elements/sec (ops/sec) */
+        if (per_sec >= 1e9) {
+            snprintf(buf, bufsize, "%.2f Gops/s", per_sec / 1e9);
+        } else if (per_sec >= 1e6) {
+            snprintf(buf, bufsize, "%.2f Mops/s", per_sec / 1e6);
+        } else if (per_sec >= 1e3) {
+            snprintf(buf, bufsize, "%.2f Kops/s", per_sec / 1e3);
+        } else {
+            snprintf(buf, bufsize, "%.2f ops/s", per_sec);
+        }
+    }
+}
+
 /* Unicode block characters for histogram (increasing height) */
 /* ▁▂▃▄▅▆▇█ */
 static const char* zap__blocks[] = {
@@ -939,6 +1029,20 @@ void zap_report(const char* name, const zap_stats_t* stats) {
     /* Range (min … max) using ellipsis character */
     printf("  Range (min \342\200\246 max):  %s \342\200\246 %s\n", min_buf, max_buf);
 
+    /* Percentiles */
+    char p90_buf[32], p99_buf[32];
+    zap__format_time(stats->p90, p90_buf, sizeof(p90_buf));
+    zap__format_time(stats->p99, p99_buf, sizeof(p99_buf));
+    printf("  Percentiles:       p90: %s, p99: %s\n", p90_buf, p99_buf);
+
+    /* Throughput if set */
+    if (stats->throughput_type != ZAP_THROUGHPUT_NONE && stats->throughput_value > 0) {
+        char tput_buf[32];
+        zap__format_throughput(stats->mean, stats->throughput_value,
+                               stats->throughput_type, tput_buf, sizeof(tput_buf));
+        printf("  Throughput:        " ZAP_COLOR_CYAN "%s" ZAP_COLOR_RESET "\n", tput_buf);
+    }
+
     /* Outliers if any */
     size_t total_outliers = stats->outliers_low + stats->outliers_high;
     if (total_outliers > 0) {
@@ -958,6 +1062,7 @@ void zap_report(const char* name, const zap_stats_t* stats) {
 }
 
 void zap_report_group_start(const char* name) {
+    if (zap_g_config.json_output) return;  /* No group headers in JSON mode */
     printf(ZAP_COLOR_GREEN "Running benchmark group: %s"
            ZAP_COLOR_RESET "\n\n", name);
 }
@@ -1085,25 +1190,42 @@ static void zap__init_with_config(zap_t* c, const char* name,
 
 static void zap__run_and_report(zap_t* c, const char* name) {
     /* Warn if time limit was reached before collecting all samples */
-    if (c->sample_count < c->config.sample_count) {
+    if (!zap_g_config.json_output && c->sample_count < c->config.sample_count) {
         printf(ZAP_COLOR_YELLOW "Warning: time limit reached, collected %zu/%zu samples"
                ZAP_COLOR_RESET "\n", c->sample_count, c->config.sample_count);
     }
 
     zap_stats_t stats = zap_compute_stats(c->samples, c->sample_count);
     stats.iterations = c->iterations;
+    stats.throughput_type = c->throughput_type;
+    stats.throughput_value = c->throughput_value;
 
     /* Check if we should compare against baseline */
+    zap_comparison_t cmp = {0};
+    const zap_baseline_entry_t* baseline = NULL;
+
     if (zap_g_config.compare) {
-        const zap_baseline_entry_t* baseline =
-            zap_baseline_find(&zap_g_config.baseline, name);
+        baseline = zap_baseline_find(&zap_g_config.baseline, name);
         if (baseline) {
-            zap_comparison_t cmp = zap_compare(baseline, &stats);
-            zap_report_comparison(name, &stats, &cmp);
-        } else {
-            printf(ZAP_COLOR_YELLOW "(new)" ZAP_COLOR_RESET " ");
-            zap_report(name, &stats);
+            cmp = zap_compare(baseline, &stats);
+
+            /* Track regression for --fail-threshold */
+            if (zap_g_config.fail_threshold > 0.0 &&
+                cmp.change == ZAP_REGRESSED &&
+                cmp.change_pct > zap_g_config.fail_threshold) {
+                zap_g_config.has_regression = true;
+            }
         }
+    }
+
+    /* Output results */
+    if (zap_g_config.json_output) {
+        zap_report_json(name, &stats, baseline ? &cmp : NULL);
+    } else if (baseline) {
+        zap_report_comparison(name, &stats, &cmp);
+    } else if (zap_g_config.compare) {
+        printf(ZAP_COLOR_YELLOW "(new)" ZAP_COLOR_RESET " ");
+        zap_report(name, &stats);
     } else {
         zap_report(name, &stats);
     }
@@ -1206,6 +1328,28 @@ void zap_bencher_iter_custom(zap_bencher_t* b,
     }
 
     if (teardown) teardown(user_data);
+}
+
+/* ========================================================================== */
+/* THROUGHPUT CONFIGURATION                                                   */
+/* ========================================================================== */
+
+void zap_set_throughput_bytes(zap_t* c, size_t bytes_per_iter) {
+    c->throughput_type = ZAP_THROUGHPUT_BYTES;
+    c->throughput_value = bytes_per_iter;
+}
+
+void zap_set_throughput_elements(zap_t* c, size_t elements_per_iter) {
+    c->throughput_type = ZAP_THROUGHPUT_ELEMENTS;
+    c->throughput_value = elements_per_iter;
+}
+
+void zap_bencher_set_throughput_bytes(zap_bencher_t* b, size_t bytes_per_iter) {
+    zap_set_throughput_bytes(b->state, bytes_per_iter);
+}
+
+void zap_bencher_set_throughput_elements(zap_bencher_t* b, size_t elements_per_iter) {
+    zap_set_throughput_elements(b->state, elements_per_iter);
 }
 
 /* ========================================================================== */
@@ -1355,8 +1499,10 @@ bool zap_baseline_load(zap_baseline_t* b, const char* path) {
     }
 
     fclose(f);
-    printf(ZAP_COLOR_BLUE "Loaded baseline: %s (%zu entries)"
-           ZAP_COLOR_RESET "\n\n", path, b->count);
+    if (!zap_g_config.json_output) {
+        printf(ZAP_COLOR_BLUE "Loaded baseline: %s (%zu entries)"
+               ZAP_COLOR_RESET "\n\n", path, b->count);
+    }
     return true;
 }
 
@@ -1430,6 +1576,20 @@ void zap_report_comparison(const char* name, const zap_stats_t* stats,
     /* Range (min … max) using ellipsis character */
     printf("  Range (min \342\200\246 max):  %s \342\200\246 %s\n", min_buf, max_buf);
 
+    /* Percentiles */
+    char p90_buf[32], p99_buf[32];
+    zap__format_time(stats->p90, p90_buf, sizeof(p90_buf));
+    zap__format_time(stats->p99, p99_buf, sizeof(p99_buf));
+    printf("  Percentiles:       p90: %s, p99: %s\n", p90_buf, p99_buf);
+
+    /* Throughput if set */
+    if (stats->throughput_type != ZAP_THROUGHPUT_NONE && stats->throughput_value > 0) {
+        char tput_buf[32];
+        zap__format_throughput(stats->mean, stats->throughput_value,
+                               stats->throughput_type, tput_buf, sizeof(tput_buf));
+        printf("  Throughput:        " ZAP_COLOR_CYAN "%s" ZAP_COLOR_RESET "\n", tput_buf);
+    }
+
     /* Show comparison */
     const char* change_color;
     const char* change_text;
@@ -1470,6 +1630,54 @@ void zap_report_comparison(const char* name, const zap_stats_t* stats,
     }
 
     printf("\n");
+}
+
+void zap_report_json(const char* name, const zap_stats_t* stats,
+                     const zap_comparison_t* cmp) {
+    /* Clear any status message */
+    zap_status_clear();
+
+    printf("{\"name\":\"%s\"", name);
+    printf(",\"samples\":%zu", stats->sample_count);
+    printf(",\"iterations\":%zu", stats->iterations);
+    printf(",\"mean_ns\":%.6f", stats->mean);
+    printf(",\"median_ns\":%.6f", stats->median);
+    printf(",\"std_dev_ns\":%.6f", stats->std_dev);
+    printf(",\"min_ns\":%.6f", stats->min);
+    printf(",\"max_ns\":%.6f", stats->max);
+    printf(",\"p75_ns\":%.6f", stats->p75);
+    printf(",\"p90_ns\":%.6f", stats->p90);
+    printf(",\"p95_ns\":%.6f", stats->p95);
+    printf(",\"p99_ns\":%.6f", stats->p99);
+    printf(",\"ci_lower_ns\":%.6f", stats->ci_lower);
+    printf(",\"ci_upper_ns\":%.6f", stats->ci_upper);
+    printf(",\"outliers_low\":%zu", stats->outliers_low);
+    printf(",\"outliers_high\":%zu", stats->outliers_high);
+
+    /* Throughput if set */
+    if (stats->throughput_type != ZAP_THROUGHPUT_NONE && stats->throughput_value > 0) {
+        double per_sec = (double)stats->throughput_value * 1e9 / stats->mean;
+        printf(",\"throughput\":{");
+        printf("\"type\":\"%s\"",
+               stats->throughput_type == ZAP_THROUGHPUT_BYTES ? "bytes" : "elements");
+        printf(",\"value_per_iter\":%zu", stats->throughput_value);
+        printf(",\"per_second\":%.2f", per_sec);
+        printf("}");
+    }
+
+    if (cmp) {
+        printf(",\"baseline\":{");
+        printf("\"old_mean_ns\":%.6f", cmp->old_mean);
+        printf(",\"change_pct\":%.4f", cmp->change_pct);
+        printf(",\"significant\":%s", cmp->significant ? "true" : "false");
+        printf(",\"status\":\"%s\"",
+               cmp->change == ZAP_IMPROVED ? "improved" :
+               cmp->change == ZAP_REGRESSED ? "regressed" : "unchanged");
+        printf("}");
+    }
+
+    printf("}\n");
+    fflush(stdout);
 }
 
 /* ========================================================================== */
@@ -1537,8 +1745,11 @@ void zap_parse_args(int argc, char** argv) {
     const char* default_baseline = ".zap/baseline";
     zap_g_config.baseline_path = default_baseline;
     zap_g_config.filter = NULL;          /* No filter by default */
+    zap_g_config.fail_threshold = 0.0;   /* No threshold by default */
     zap_g_config.save_baseline = true;   /* Auto-save by default */
     zap_g_config.compare = true;         /* Auto-compare by default */
+    zap_g_config.json_output = false;    /* Human-readable by default */
+    zap_g_config.has_regression = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--filter") == 0 || strcmp(argv[i], "-f") == 0) {
@@ -1546,6 +1757,15 @@ void zap_parse_args(int argc, char** argv) {
                 zap_g_config.filter = argv[++i];
             } else {
                 fprintf(stderr, "Error: --filter requires a pattern argument\n");
+                exit(1);
+            }
+        } else if (strcmp(argv[i], "--json") == 0) {
+            zap_g_config.json_output = true;
+        } else if (strcmp(argv[i], "--fail-threshold") == 0) {
+            if (i + 1 < argc) {
+                zap_g_config.fail_threshold = atof(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --fail-threshold requires a percentage value\n");
                 exit(1);
             }
         } else if (strcmp(argv[i], "--save-baseline") == 0) {
@@ -1570,6 +1790,8 @@ void zap_parse_args(int argc, char** argv) {
             printf("  -f, --filter PATTERN    Only run benchmarks matching PATTERN\n");
             printf("                          Supports * (any chars) and ? (single char)\n");
             printf("                          Without wildcards, matches substring\n");
+            printf("  --json                  Output results as JSON (one object per line)\n");
+            printf("  --fail-threshold PCT    Exit with code 1 if regression exceeds PCT%%\n");
             printf("  --baseline [FILE]       Use specific baseline file (default: %s)\n",
                    default_baseline);
             printf("  --save-baseline [FILE]  Alias for --baseline\n");
@@ -1579,11 +1801,11 @@ void zap_parse_args(int argc, char** argv) {
             printf("  -h, --help              Show this help\n");
             printf("\nBy default, results are saved to and compared against '%s'\n",
                    default_baseline);
-            printf("\nFilter examples:\n");
+            printf("\nExamples:\n");
             printf("  --filter sort           Match benchmarks containing 'sort'\n");
             printf("  --filter 'sort*'        Match benchmarks starting with 'sort'\n");
-            printf("  --filter '*hash*'       Match benchmarks containing 'hash'\n");
-            printf("  --filter 'bench_?'      Match 'bench_a', 'bench_b', etc.\n");
+            printf("  --json                  Output JSON for CI integration\n");
+            printf("  --fail-threshold 5      Fail CI if any benchmark regresses >5%%\n");
             exit(0);
         }
     }
@@ -1626,7 +1848,7 @@ static void zap_run_bench_internal(const zap_bench_t* bench) {
     bench->func(&c);
 
     /* Warn if time limit was reached before collecting all samples */
-    if (c.sample_count < c.config.sample_count) {
+    if (!zap_g_config.json_output && c.sample_count < c.config.sample_count) {
         printf(ZAP_COLOR_YELLOW "Warning: time limit reached, collected %zu/%zu samples"
                ZAP_COLOR_RESET "\n", c.sample_count, c.config.sample_count);
     }
@@ -1634,19 +1856,35 @@ static void zap_run_bench_internal(const zap_bench_t* bench) {
     /* Compute statistics */
     zap_stats_t stats = zap_compute_stats(c.samples, c.sample_count);
     stats.iterations = c.iterations;
+    stats.throughput_type = c.throughput_type;
+    stats.throughput_value = c.throughput_value;
 
     /* Check if we should compare against baseline */
+    zap_comparison_t cmp = {0};
+    const zap_baseline_entry_t* baseline = NULL;
+
     if (zap_g_config.compare) {
-        const zap_baseline_entry_t* baseline =
-            zap_baseline_find(&zap_g_config.baseline, bench->name);
+        baseline = zap_baseline_find(&zap_g_config.baseline, bench->name);
         if (baseline) {
-            zap_comparison_t cmp = zap_compare(baseline, &stats);
-            zap_report_comparison(bench->name, &stats, &cmp);
-        } else {
-            /* No baseline for this benchmark */
-            printf(ZAP_COLOR_YELLOW "(new)" ZAP_COLOR_RESET " ");
-            zap_report(bench->name, &stats);
+            cmp = zap_compare(baseline, &stats);
+
+            /* Track regression for --fail-threshold */
+            if (zap_g_config.fail_threshold > 0.0 &&
+                cmp.change == ZAP_REGRESSED &&
+                cmp.change_pct > zap_g_config.fail_threshold) {
+                zap_g_config.has_regression = true;
+            }
         }
+    }
+
+    /* Output results */
+    if (zap_g_config.json_output) {
+        zap_report_json(bench->name, &stats, baseline ? &cmp : NULL);
+    } else if (baseline) {
+        zap_report_comparison(bench->name, &stats, &cmp);
+    } else if (zap_g_config.compare) {
+        printf(ZAP_COLOR_YELLOW "(new)" ZAP_COLOR_RESET " ");
+        zap_report(bench->name, &stats);
     } else {
         zap_report(bench->name, &stats);
     }
@@ -1680,16 +1918,25 @@ static void zap_run_group_internal(const zap_group_t* group) {
     zap_report_group_end();
 }
 
-static void zap_finalize(void) {
+static int zap_finalize(void) {
     /* Save baseline if requested */
     if (zap_g_config.save_baseline && zap_g_config.baseline.count > 0) {
         if (zap_baseline_save(&zap_g_config.baseline,
                                     zap_g_config.baseline_path)) {
             /* Only print message for explicit path, not auto-save */
-            if (zap_g_config.explicit_path) {
+            if (!zap_g_config.json_output && zap_g_config.explicit_path) {
                 printf(ZAP_COLOR_GREEN "Baseline saved to: %s"
                        ZAP_COLOR_RESET "\n", zap_g_config.baseline_path);
             }
+        }
+    }
+
+    /* Check for regressions beyond threshold */
+    if (zap_g_config.has_regression) {
+        if (!zap_g_config.json_output) {
+            fprintf(stderr, ZAP_COLOR_RED
+                    "Error: Benchmark regression exceeded threshold (%.1f%%)"
+                    ZAP_COLOR_RESET "\n", zap_g_config.fail_threshold);
         }
     }
 
@@ -1697,6 +1944,8 @@ static void zap_finalize(void) {
     if (zap_g_config.baseline.entries) {
         zap_baseline_free(&zap_g_config.baseline);
     }
+
+    return zap_g_config.has_regression ? 1 : 0;
 }
 
 #endif /* ZAP_IMPLEMENTATION */
