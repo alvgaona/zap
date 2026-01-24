@@ -88,6 +88,10 @@ static void bench_fibonacci_group(void) {
     /* Create a runtime group with custom configuration */
     zap_runtime_group_t* group = zap_benchmark_group("fibonacci");
 
+    /* Tag this group for filtering */
+    zap_group_tag(group, "fast");
+    zap_group_tag(group, "cpu");
+
     /* Set shorter times for faster testing */
     zap_group_warmup_time(group, ZAP_MILLIS(500));
     zap_group_measurement_time(group, ZAP_SECONDS(2));
@@ -128,6 +132,10 @@ static void iter_sort(zap_bencher_t* b, void* param) {
 
 static void bench_sorting_group(void) {
     zap_runtime_group_t* group = zap_benchmark_group("sorting");
+
+    /* Tag this group */
+    zap_group_tag(group, "slow");
+    zap_group_tag(group, "cpu");
 
     /* Use shorter times since sorting is slow */
     zap_group_warmup_time(group, ZAP_MILLIS(200));
@@ -172,6 +180,10 @@ static void iter_malloc(zap_bencher_t* b, void* param) {
 
 static void bench_memory_group(void) {
     zap_runtime_group_t* group = zap_benchmark_group("memory");
+
+    /* Tag this group */
+    zap_group_tag(group, "fast");
+    zap_group_tag(group, "alloc");
 
     size_t sizes[] = {64, 256, 1024, 4096, 16384, 65536};
     size_t num_sizes = sizeof(sizes) / sizeof(sizes[0]);

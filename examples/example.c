@@ -2,6 +2,7 @@
 #include "zap.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* Example benchmark: Empty loop baseline */
 void bench_empty(zap_t* c) {
@@ -89,11 +90,46 @@ void bench_malloc_large(zap_t* c) {
     }
 }
 
+/* Example benchmark: Memory copy with throughput reporting */
+#define COPY_SIZE (1024 * 1024)  /* 1 MB */
+
+void bench_memcpy_1mb(zap_t* c) {
+    char* src = (char*)malloc(COPY_SIZE);
+    char* dst = (char*)malloc(COPY_SIZE);
+    memset(src, 'x', COPY_SIZE);
+
+    /* Set throughput: each iteration copies COPY_SIZE bytes */
+    zap_set_throughput_bytes(c, COPY_SIZE);
+
+    ZAP_LOOP(c) {
+        memcpy(dst, src, COPY_SIZE);
+        zap_black_box(dst);
+    }
+
+    free(src);
+    free(dst);
+}
+
+void bench_memset_1mb(zap_t* c) {
+    char* dst = (char*)malloc(COPY_SIZE);
+
+    /* Set throughput: each iteration writes COPY_SIZE bytes */
+    zap_set_throughput_bytes(c, COPY_SIZE);
+
+    ZAP_LOOP(c) {
+        memset(dst, 'x', COPY_SIZE);
+        zap_black_box(dst);
+    }
+
+    free(dst);
+}
+
 /* Define benchmark groups */
 ZAP_GROUP(overhead, bench_empty, bench_arithmetic);
 ZAP_GROUP(compute, bench_compute);
 ZAP_GROUP(fib_benches, bench_fibonacci_10, bench_fibonacci_20);
 ZAP_GROUP(memory, bench_malloc_small, bench_malloc_large);
+ZAP_GROUP(throughput_demo, bench_memcpy_1mb, bench_memset_1mb);
 
 /* Main entry point - runs all groups */
-ZAP_MAIN(overhead, compute, fib_benches, memory);
+ZAP_MAIN(overhead, compute, fib_benches, memory, throughput_demo);
