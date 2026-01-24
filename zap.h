@@ -252,6 +252,39 @@ typedef struct zap_env {
     bool has_neon;
 } zap_env_t;
 
+// Maximum implementations in a comparison group
+#ifndef ZAP_MAX_IMPLS
+#define ZAP_MAX_IMPLS 8
+#endif
+
+// Result for a single implementation in a comparison
+typedef struct zap_impl_result {
+    char             name[64];
+    zap_stats_t      stats;
+    bool             valid;
+} zap_impl_result_t;
+
+// Comparison group configuration
+typedef struct zap_compare_group {
+    char                     name[128];
+    zap_bench_config_t       config;
+    size_t                   baseline_idx;
+    bool                     header_printed;
+    char                     tags[ZAP_MAX_TAGS][32];
+    size_t                   tag_count;
+} zap_compare_group_t;
+
+// Comparison context for a single benchmark with multiple implementations
+typedef struct zap_compare_ctx {
+    zap_compare_group_t*     group;
+    zap_benchmark_id_t       id;
+    zap_impl_result_t        results[ZAP_MAX_IMPLS];
+    size_t                   impl_count;
+    void*                    input;
+    size_t                   input_size;
+    bool                     skipped;  // Set if filtered out or dry-run
+} zap_compare_ctx_t;
+
 // Maximum CLI tags for filtering
 #ifndef ZAP_MAX_CLI_TAGS
 #define ZAP_MAX_CLI_TAGS 16
@@ -396,6 +429,17 @@ void zap_status_clear(void);
 void zap_env_detect(zap_env_t* env);
 void zap_env_print(const zap_env_t* env);
 void zap_env_print_json(const zap_env_t* env);
+
+// Comparison API - compare multiple implementations
+zap_compare_group_t* zap_compare_group(const char* name);
+void zap_compare_set_baseline(zap_compare_group_t* g, size_t idx);
+void zap_compare_tag(zap_compare_group_t* g, const char* tag);
+zap_compare_ctx_t* zap_compare_begin(zap_compare_group_t* g,
+                                     zap_benchmark_id_t id,
+                                     void* input, size_t input_size);
+void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_param_fn fn);
+void zap_compare_end(zap_compare_ctx_t* ctx);
+void zap_compare_group_finish(zap_compare_group_t* g);
 
 /* MACROS */
 
@@ -2533,6 +2577,375 @@ static void zap_run_group_internal(const zap_group_t* group) {
     }
 
     zap__current_group_name = NULL;
+}
+
+/* COMPARISON API IMPLEMENTATION */
+
+static zap_compare_group_t zap__compare_group = {0};
+static zap_compare_ctx_t zap__compare_ctx = {0};
+
+zap_compare_group_t* zap_compare_group(const char* name) {
+    zap_compare_group_t* g = &zap__compare_group;
+    memset(g, 0, sizeof(*g));
+
+    strncpy(g->name, name, sizeof(g->name) - 1);
+    g->name[sizeof(g->name) - 1] = '\0';
+
+    // Set defaults
+    g->config.warmup_time_ns = ZAP_DEFAULT_WARMUP_TIME_NS;
+    g->config.measurement_time_ns = ZAP_DEFAULT_MEASUREMENT_TIME_NS;
+    g->config.sample_count = ZAP_DEFAULT_SAMPLE_COUNT;
+    g->baseline_idx = 0;  // First implementation is baseline by default
+    g->header_printed = false;
+    g->tag_count = 0;
+
+    // Print header for comparison group (unless filtering/dry-run)
+    if (!zap_g_config.filter && !zap_g_config.dry_run && zap_g_config.cli_tag_count == 0) {
+        if (!zap_g_config.json_output) {
+            printf("%s%sRunning comparison group:%s %s%s%s\n\n",
+                   zap__c_bold(), zap__c_purple(), zap__c_reset(),
+                   zap__c_purple(), name, zap__c_reset());
+        }
+        g->header_printed = true;
+    }
+
+    return g;
+}
+
+void zap_compare_set_baseline(zap_compare_group_t* g, size_t idx) {
+    g->baseline_idx = idx;
+}
+
+void zap_compare_tag(zap_compare_group_t* g, const char* tag) {
+    if (g->tag_count < ZAP_MAX_TAGS) {
+        strncpy(g->tags[g->tag_count], tag, sizeof(g->tags[0]) - 1);
+        g->tags[g->tag_count][sizeof(g->tags[0]) - 1] = '\0';
+        g->tag_count++;
+    }
+}
+
+// Check if comparison group matches tag filter
+static bool zap__compare_group_matches_tags(const zap_compare_group_t* g) {
+    if (zap_g_config.cli_tag_count == 0) return true;
+
+    for (size_t i = 0; i < zap_g_config.cli_tag_count; i++) {
+        for (size_t j = 0; j < g->tag_count; j++) {
+            if (strcmp(zap_g_config.cli_tags[i], g->tags[j]) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+zap_compare_ctx_t* zap_compare_begin(zap_compare_group_t* g,
+                                     zap_benchmark_id_t id,
+                                     void* input, size_t input_size) {
+    zap_compare_ctx_t* ctx = &zap__compare_ctx;
+    memset(ctx, 0, sizeof(*ctx));
+
+    ctx->group = g;
+    ctx->id = id;
+    ctx->input = input;
+    ctx->input_size = input_size;
+    ctx->impl_count = 0;
+    ctx->skipped = false;
+
+    // Build full name for filtering
+    char full_name[256];
+    snprintf(full_name, sizeof(full_name), "%s/%s", id.label, id.param_str);
+
+    // Check filter
+    if (!zap_matches_filter(full_name, zap_g_config.filter)) {
+        ctx->skipped = true;
+        return ctx;
+    }
+
+    // Check tag filter
+    if (!zap__compare_group_matches_tags(g)) {
+        ctx->skipped = true;
+        return ctx;
+    }
+
+    // Dry run mode
+    if (zap_g_config.dry_run) {
+        if (zap_g_config.json_output) {
+            printf("{\"type\":\"comparison\",\"group\":\"%s\",\"name\":\"%s\"}\n",
+                   g->name, full_name);
+        } else {
+            printf("  %s%s%s/%s%s%s (comparison)\n",
+                   zap__c_purple(), g->name, zap__c_reset(),
+                   zap__c_magenta(), full_name, zap__c_reset());
+        }
+        ctx->skipped = true;
+        return ctx;
+    }
+
+    // Print deferred group header on first matching benchmark
+    if (!g->header_printed) {
+        if (!zap_g_config.json_output) {
+            printf("%s%sRunning comparison group:%s %s%s%s\n\n",
+                   zap__c_bold(), zap__c_purple(), zap__c_reset(),
+                   zap__c_purple(), g->name, zap__c_reset());
+        }
+        g->header_printed = true;
+    }
+
+    return ctx;
+}
+
+void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_param_fn fn) {
+    if (ctx->skipped) return;
+    if (ctx->impl_count >= ZAP_MAX_IMPLS) return;
+
+    zap_compare_group_t* g = ctx->group;
+    zap_impl_result_t* result = &ctx->results[ctx->impl_count];
+
+    // Store implementation name
+    strncpy(result->name, name, sizeof(result->name) - 1);
+    result->name[sizeof(result->name) - 1] = '\0';
+
+    // Build full benchmark name: "label/param [impl_name]"
+    char bench_name[384];
+    snprintf(bench_name, sizeof(bench_name), "%s/%s [%s]",
+             ctx->id.label, ctx->id.param_str, name);
+
+    // Initialize benchmark state
+    zap_t c;
+    zap__init_with_config(&c, bench_name, &g->config);
+
+    // Create bencher
+    zap_bencher_t b;
+    b.state = &c;
+    b.group = NULL;  // No runtime group
+    strncpy(b.full_name, bench_name, sizeof(b.full_name) - 1);
+    b.full_name[sizeof(b.full_name) - 1] = '\0';
+
+    // Run the benchmark
+    fn(&b, ctx->input);
+
+    // Warn if time limit was reached
+    if (!zap_g_config.json_output && c.sample_count < c.config.sample_count) {
+        printf("%sWarning: time limit reached, collected %zu/%zu samples%s\n",
+               zap__c_yellow(), c.sample_count, c.config.sample_count, zap__c_reset());
+    }
+
+    // Compute stats
+    result->stats = zap_compute_stats(c.samples, c.sample_count);
+    result->stats.iterations = c.iterations;
+    result->stats.throughput_type = c.throughput_type;
+    result->stats.throughput_value = c.throughput_value;
+    result->valid = true;
+
+    ctx->impl_count++;
+
+    zap_cleanup(&c);
+}
+
+void zap_compare_end(zap_compare_ctx_t* ctx) {
+    if (ctx->skipped) return;
+    if (ctx->impl_count == 0) return;
+
+    zap_compare_group_t* g = ctx->group;
+    size_t baseline_idx = g->baseline_idx;
+    if (baseline_idx >= ctx->impl_count) {
+        baseline_idx = 0;
+    }
+
+    // Build comparison name
+    char cmp_name[256];
+    snprintf(cmp_name, sizeof(cmp_name), "%s/%s", ctx->id.label, ctx->id.param_str);
+
+    // Clear status line
+    zap_status_clear();
+
+    if (zap_g_config.json_output) {
+        // JSON output for comparison
+        printf("{\"type\":\"comparison\",\"name\":\"%s\"", cmp_name);
+        printf(",\"baseline_idx\":%zu", baseline_idx);
+        printf(",\"implementations\":[");
+
+        for (size_t i = 0; i < ctx->impl_count; i++) {
+            zap_impl_result_t* r = &ctx->results[i];
+            if (!r->valid) continue;
+
+            if (i > 0) printf(",");
+            printf("{\"name\":\"%s\"", r->name);
+            printf(",\"mean_ns\":%.6f", r->stats.mean);
+            printf(",\"median_ns\":%.6f", r->stats.median);
+            printf(",\"std_dev_ns\":%.6f", r->stats.std_dev);
+            printf(",\"samples\":%zu", r->stats.sample_count);
+            printf(",\"iterations\":%zu", r->stats.iterations);
+
+            // Throughput if set
+            if (r->stats.throughput_type != ZAP_THROUGHPUT_NONE && r->stats.throughput_value > 0) {
+                double per_sec = (double)r->stats.throughput_value * 1e9 / r->stats.mean;
+                printf(",\"throughput\":{\"type\":\"%s\",\"per_second\":%.2f}",
+                       r->stats.throughput_type == ZAP_THROUGHPUT_BYTES ? "bytes" : "elements",
+                       per_sec);
+            }
+
+            // Calculate speedup vs baseline
+            if (i != baseline_idx && ctx->results[baseline_idx].valid) {
+                double speedup = ctx->results[baseline_idx].stats.mean / r->stats.mean;
+                printf(",\"vs_baseline\":{\"speedup\":%.4f}", speedup);
+            }
+
+            // Compare with previous run baseline
+            char full_bench_name[384];
+            snprintf(full_bench_name, sizeof(full_bench_name), "%s/%s [%s]",
+                     ctx->id.label, ctx->id.param_str, r->name);
+            const zap_baseline_entry_t* prev = zap_baseline_find(&zap_g_config.baseline, full_bench_name);
+            if (prev && zap_g_config.compare) {
+                zap_comparison_t cmp = zap_compare(prev, &r->stats);
+                printf(",\"vs_previous\":{\"old_mean_ns\":%.6f,\"change_pct\":%.4f,\"status\":\"%s\"}",
+                       cmp.old_mean, cmp.change_pct,
+                       cmp.change == ZAP_IMPROVED ? "improved" :
+                       cmp.change == ZAP_REGRESSED ? "regressed" : "unchanged");
+
+                // Track regression
+                if (zap_g_config.fail_threshold > 0.0 &&
+                    cmp.change == ZAP_REGRESSED &&
+                    cmp.change_pct > zap_g_config.fail_threshold) {
+                    zap_g_config.has_regression = true;
+                }
+            }
+
+            printf("}");
+
+            // Save to baseline
+            if (zap_g_config.save_baseline) {
+                zap_baseline_add(&zap_g_config.baseline, full_bench_name, &r->stats);
+            }
+        }
+
+        printf("]}\n");
+        fflush(stdout);
+    } else {
+        // Text output for comparison
+        printf("%s%s%s comparison:\n", zap__c_bold(), zap__c_magenta(), cmp_name);
+
+        for (size_t i = 0; i < ctx->impl_count; i++) {
+            zap_impl_result_t* r = &ctx->results[i];
+            if (!r->valid) continue;
+
+            bool is_baseline = (i == baseline_idx);
+
+            char median_buf[32], mean_buf[32], std_buf[32];
+            char min_buf[32], max_buf[32];
+
+            zap__format_time(r->stats.median, median_buf, sizeof(median_buf));
+            zap__format_time(r->stats.mean, mean_buf, sizeof(mean_buf));
+            zap__format_time(r->stats.std_dev, std_buf, sizeof(std_buf));
+            zap__format_time(r->stats.min, min_buf, sizeof(min_buf));
+            zap__format_time(r->stats.max, max_buf, sizeof(max_buf));
+
+            // Implementation name header
+            if (is_baseline) {
+                printf("  %s%s%s %s[baseline]%s:\n",
+                       zap__c_cyan(), r->name, zap__c_reset(),
+                       zap__c_dim(), zap__c_reset());
+            } else {
+                printf("  %s%s%s:\n", zap__c_cyan(), r->name, zap__c_reset());
+            }
+
+            // Sample info
+            printf("    %zu samples \303\227 %zu evals, median: %s%s%s\n",
+                   r->stats.sample_count, r->stats.iterations,
+                   zap__c_cyan(), median_buf, zap__c_reset());
+
+            // Time (mean ± σ)
+            printf("    %sTime  (mean \302\261 \317\203):%s  %s%s%s \302\261 %s\n",
+                   zap__c_dim(), zap__c_reset(),
+                   zap__c_bold(), mean_buf, zap__c_reset(), std_buf);
+
+            // Range (min … max)
+            printf("    %sRange (min \342\200\246 max):%s  %s \342\200\246 %s\n",
+                   zap__c_dim(), zap__c_reset(), min_buf, max_buf);
+
+            // Throughput if set
+            if (r->stats.throughput_type != ZAP_THROUGHPUT_NONE && r->stats.throughput_value > 0) {
+                char tput_buf[32];
+                zap__format_throughput(r->stats.mean, r->stats.throughput_value,
+                                       r->stats.throughput_type, tput_buf, sizeof(tput_buf));
+                printf("    %sThroughput:%s        %s%s%s\n",
+                       zap__c_dim(), zap__c_reset(),
+                       zap__c_cyan(), tput_buf, zap__c_reset());
+            }
+
+            // Speedup vs baseline (only for non-baseline implementations)
+            if (!is_baseline && ctx->results[baseline_idx].valid) {
+                double speedup = ctx->results[baseline_idx].stats.mean / r->stats.mean;
+                if (speedup >= 1.0) {
+                    printf("    %svs %s:%s          %s%.2fx faster%s\n",
+                           zap__c_dim(), ctx->results[baseline_idx].name, zap__c_reset(),
+                           zap__c_green(), speedup, zap__c_reset());
+                } else {
+                    double pct_slower = (1.0 / speedup - 1.0) * 100.0;
+                    printf("    %svs %s:%s          %s%.2fx (%.0f%% slower)%s\n",
+                           zap__c_dim(), ctx->results[baseline_idx].name, zap__c_reset(),
+                           zap__c_red(), speedup, pct_slower, zap__c_reset());
+                }
+            }
+
+            // Compare with previous run
+            char full_bench_name[384];
+            snprintf(full_bench_name, sizeof(full_bench_name), "%s/%s [%s]",
+                     ctx->id.label, ctx->id.param_str, r->name);
+            const zap_baseline_entry_t* prev = zap_baseline_find(&zap_g_config.baseline, full_bench_name);
+            if (prev && zap_g_config.compare) {
+                zap_comparison_t cmp = zap_compare(prev, &r->stats);
+
+                char old_mean_buf[32];
+                zap__format_time(cmp.old_mean, old_mean_buf, sizeof(old_mean_buf));
+
+                const char* change_color;
+                const char* change_text;
+                char sign = (cmp.change_pct >= 0) ? '+' : '-';
+                double abs_pct = fabs(cmp.change_pct);
+
+                switch (cmp.change) {
+                    case ZAP_IMPROVED:
+                        change_color = zap__c_green();
+                        change_text = "\342\206\223 faster";
+                        break;
+                    case ZAP_REGRESSED:
+                        change_color = zap__c_red();
+                        change_text = "\342\206\221 slower";
+                        break;
+                    default:
+                        change_color = zap__c_purple();
+                        change_text = "\342\211\210";
+                        break;
+                }
+
+                printf("    %svs previous:%s      %s%c%.2f%% %s%s (was %s)\n",
+                       zap__c_dim(), zap__c_reset(),
+                       change_color, sign, abs_pct, change_text, zap__c_reset(), old_mean_buf);
+
+                // Track regression
+                if (zap_g_config.fail_threshold > 0.0 &&
+                    cmp.change == ZAP_REGRESSED &&
+                    cmp.change_pct > zap_g_config.fail_threshold) {
+                    zap_g_config.has_regression = true;
+                }
+            }
+
+            // Save to baseline
+            if (zap_g_config.save_baseline) {
+                zap_baseline_add(&zap_g_config.baseline, full_bench_name, &r->stats);
+            }
+
+            printf("\n");
+        }
+    }
+}
+
+void zap_compare_group_finish(zap_compare_group_t* g) {
+    if (g->header_printed && !zap_g_config.json_output) {
+        printf("\n");
+    }
+    memset(g, 0, sizeof(*g));
 }
 
 static int zap_finalize(void) {
