@@ -583,6 +583,16 @@ void zap_env_print_json(const zap_env_t* env);
 #endif
 
 /* ========================================================================== */
+/* UTILITY MACROS                                                             */
+/* ========================================================================== */
+
+#if defined(__GNUC__) || defined(__clang__)
+#define ZAP_UNUSED __attribute__((unused))
+#else
+#define ZAP_UNUSED
+#endif
+
+/* ========================================================================== */
 /* ANSI COLOR CODES - Synthwave palette                                       */
 /* ========================================================================== */
 
@@ -961,16 +971,16 @@ static int zap__use_colors(void) {
 }
 
 /* Conditional color codes - return empty string if colors disabled */
-static const char* zap__c_reset(void)   { return zap__use_colors() ? ZAP_COLOR_RESET : ""; }
-static const char* zap__c_bold(void)    { return zap__use_colors() ? ZAP_COLOR_BOLD : ""; }
-static const char* zap__c_dim(void)     { return zap__use_colors() ? ZAP_COLOR_DIM : ""; }
-static const char* zap__c_green(void)   { return zap__use_colors() ? ZAP_COLOR_GREEN : ""; }
-static const char* zap__c_yellow(void)  { return zap__use_colors() ? ZAP_COLOR_YELLOW : ""; }
-static const char* zap__c_blue(void)    { return zap__use_colors() ? ZAP_COLOR_BLUE : ""; }
-static const char* zap__c_cyan(void)    { return zap__use_colors() ? ZAP_COLOR_CYAN : ""; }
-static const char* zap__c_red(void)     { return zap__use_colors() ? ZAP_COLOR_RED : ""; }
-static const char* zap__c_magenta(void) { return zap__use_colors() ? ZAP_COLOR_MAGENTA : ""; }
-static const char* zap__c_purple(void)  { return zap__use_colors() ? ZAP_COLOR_PURPLE : ""; }
+static ZAP_UNUSED const char* zap__c_reset(void)   { return zap__use_colors() ? ZAP_COLOR_RESET : ""; }
+static ZAP_UNUSED const char* zap__c_bold(void)    { return zap__use_colors() ? ZAP_COLOR_BOLD : ""; }
+static ZAP_UNUSED const char* zap__c_dim(void)     { return zap__use_colors() ? ZAP_COLOR_DIM : ""; }
+static ZAP_UNUSED const char* zap__c_green(void)   { return zap__use_colors() ? ZAP_COLOR_GREEN : ""; }
+static ZAP_UNUSED const char* zap__c_yellow(void)  { return zap__use_colors() ? ZAP_COLOR_YELLOW : ""; }
+static ZAP_UNUSED const char* zap__c_blue(void)    { return zap__use_colors() ? ZAP_COLOR_BLUE : ""; }
+static ZAP_UNUSED const char* zap__c_cyan(void)    { return zap__use_colors() ? ZAP_COLOR_CYAN : ""; }
+static ZAP_UNUSED const char* zap__c_red(void)     { return zap__use_colors() ? ZAP_COLOR_RED : ""; }
+static ZAP_UNUSED const char* zap__c_magenta(void) { return zap__use_colors() ? ZAP_COLOR_MAGENTA : ""; }
+static ZAP_UNUSED const char* zap__c_purple(void)  { return zap__use_colors() ? ZAP_COLOR_PURPLE : ""; }
 
 /* ========================================================================== */
 /* ENVIRONMENT PRINT                                                          */
