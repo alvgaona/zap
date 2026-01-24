@@ -35,6 +35,7 @@ extern "C" {
 /* CONFIGURATION                                                              */
 /* ========================================================================== */
 
+/* Measurement defaults */
 #ifndef ZAP_DEFAULT_SAMPLE_COUNT
 #define ZAP_DEFAULT_SAMPLE_COUNT 100
 #endif
@@ -47,8 +48,30 @@ extern "C" {
 #define ZAP_DEFAULT_MEASUREMENT_TIME_NS 3000000000ULL  /* 3 seconds */
 #endif
 
+#ifndef ZAP_DEFAULT_MIN_ITERS
+#define ZAP_DEFAULT_MIN_ITERS 0  /* 0 = auto */
+#endif
+
 #ifndef ZAP_CONFIDENCE_LEVEL
 #define ZAP_CONFIDENCE_LEVEL 0.95
+#endif
+
+/* Output defaults (0 = off, 1 = on) */
+#ifndef ZAP_DEFAULT_SHOW_ENV
+#define ZAP_DEFAULT_SHOW_ENV 0
+#endif
+
+#ifndef ZAP_DEFAULT_SHOW_HISTOGRAM
+#define ZAP_DEFAULT_SHOW_HISTOGRAM 0
+#endif
+
+#ifndef ZAP_DEFAULT_SHOW_PERCENTILES
+#define ZAP_DEFAULT_SHOW_PERCENTILES 0
+#endif
+
+/* Color mode: 0 = auto, 1 = always, 2 = never */
+#ifndef ZAP_DEFAULT_COLOR_MODE
+#define ZAP_DEFAULT_COLOR_MODE 0
 #endif
 
 /* ========================================================================== */
@@ -2253,7 +2276,20 @@ void zap_parse_args(int argc, char** argv) {
     zap_g_config.compare = true;         /* Auto-compare by default */
     zap_g_config.json_output = false;    /* Human-readable by default */
     zap_g_config.has_regression = false;
-    zap_g_config.color_mode = ZAP_COLOR_AUTO;  /* Auto-detect TTY */
+    zap_g_config.color_mode = (zap_color_mode_t)ZAP_DEFAULT_COLOR_MODE;
+    zap_g_config.dry_run = false;
+
+    /* Output verbosity from compile-time defaults */
+    zap_g_config.show_env = ZAP_DEFAULT_SHOW_ENV;
+    zap_g_config.show_histogram = ZAP_DEFAULT_SHOW_HISTOGRAM;
+    zap_g_config.show_percentiles = ZAP_DEFAULT_SHOW_PERCENTILES;
+
+    /* Measurement overrides from compile-time defaults */
+    zap_g_config.cli_samples = 0;        /* 0 = use per-group default */
+    zap_g_config.cli_warmup_ns = 0;      /* 0 = use per-group default */
+    zap_g_config.cli_time_ns = 0;        /* 0 = use per-group default */
+    zap_g_config.cli_min_iters = ZAP_DEFAULT_MIN_ITERS;
+    zap_g_config.cli_tag_count = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--filter") == 0 || strcmp(argv[i], "-f") == 0) {
