@@ -98,6 +98,7 @@ typedef struct criterion {
     size_t      sample_capacity;
     bool        warmup_complete;
     bool        measuring;
+    bool        status_printed;  /* Track if warmup/measuring status was shown */
     zap_bench_config_t config;
 } zap_t;
 
@@ -127,6 +128,7 @@ typedef struct zap_runtime_group {
     char                     name[128];
     zap_bench_config_t config;
     bool                     active;
+    bool                     header_printed;  /* Deferred header for filtering */
 } zap_runtime_group_t;
 
 /* Bencher - passed to iter() style benchmarks */
@@ -178,6 +180,7 @@ typedef struct zap_comparison {
 /* Global configuration */
 typedef struct zap_config {
     const char*          baseline_path;
+    const char*          filter;         /* Benchmark name filter pattern */
     bool                 save_baseline;
     bool                 compare;
     bool                 explicit_path;  /* User specified a custom path */
@@ -271,6 +274,14 @@ void zap_report_comparison(const char* name, const zap_stats_t* stats,
 
 /* CLI argument parsing */
 void zap_parse_args(int argc, char** argv);
+
+/* Filter matching */
+bool zap_matches_filter(const char* name, const char* pattern);
+
+/* Status messages */
+void zap_status_warmup(const char* name);
+void zap_status_measuring(const char* name);
+void zap_status_clear(void);
 
 /* ========================================================================== */
 /* MACROS                                                                     */
@@ -413,6 +424,7 @@ void zap_parse_args(int argc, char** argv);
 #include <math.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <unistd.h>  /* For isatty() */
 
 /* POSIX timing */
 #if defined(__APPLE__)
@@ -590,6 +602,66 @@ void zap__black_box_impl(void* ptr, size_t size) {
 }
 
 /* ========================================================================== */
+/* ANSI COLOR CODES                                                           */
+/* ========================================================================== */
+
+#define ZAP_COLOR_RESET   "\033[0m"
+#define ZAP_COLOR_BOLD    "\033[1m"
+#define ZAP_COLOR_DIM     "\033[2m"
+#define ZAP_COLOR_GREEN   "\033[32m"
+#define ZAP_COLOR_YELLOW  "\033[33m"
+#define ZAP_COLOR_BLUE    "\033[34m"
+#define ZAP_COLOR_MAGENTA "\033[35m"
+#define ZAP_COLOR_CYAN    "\033[36m"
+
+/* ========================================================================== */
+/* STATUS MESSAGE IMPLEMENTATION                                              */
+/* ========================================================================== */
+
+static int zap__is_tty = -1;  /* -1 = not checked yet */
+
+static int zap__check_tty(void) {
+    if (zap__is_tty < 0) {
+        zap__is_tty = isatty(STDOUT_FILENO);
+    }
+    return zap__is_tty;
+}
+
+void zap_status_warmup(const char* name) {
+    if (zap__check_tty()) {
+        /* TTY: overwrite in place */
+        printf("\r\033[K" ZAP_COLOR_DIM "  Warming up " ZAP_COLOR_RESET
+               ZAP_COLOR_CYAN "%s" ZAP_COLOR_RESET
+               ZAP_COLOR_DIM "..." ZAP_COLOR_RESET, name);
+    } else {
+        /* Non-TTY: simple line */
+        printf("  Warming up %s...\n", name);
+    }
+    fflush(stdout);
+}
+
+void zap_status_measuring(const char* name) {
+    if (zap__check_tty()) {
+        /* TTY: overwrite in place */
+        printf("\r\033[K" ZAP_COLOR_DIM "  Measuring  " ZAP_COLOR_RESET
+               ZAP_COLOR_CYAN "%s" ZAP_COLOR_RESET
+               ZAP_COLOR_DIM "..." ZAP_COLOR_RESET, name);
+    } else {
+        /* Non-TTY: simple line */
+        printf("  Measuring  %s...\n", name);
+    }
+    fflush(stdout);
+}
+
+void zap_status_clear(void) {
+    if (zap__check_tty()) {
+        printf("\r\033[K");
+        fflush(stdout);
+    }
+    /* Non-TTY: nothing to clear, lines already printed */
+}
+
+/* ========================================================================== */
 /* BENCHMARK CONTROL IMPLEMENTATION                                           */
 /* ========================================================================== */
 
@@ -616,7 +688,8 @@ bool zap_loop_start(zap_t* c) {
         uint64_t now = zap_now_ns();
 
         if (c->start_time == 0) {
-            /* First warmup iteration */
+            /* First warmup iteration - print status */
+            zap_status_warmup(c->name);
             c->start_time = now;
             c->current_iter = now;
             return true;
@@ -648,6 +721,7 @@ bool zap_loop_start(zap_t* c) {
             c->warmup_complete = true;
             c->start_time = 0;
             c->measuring = false;
+            c->status_printed = false;  /* Reset for measuring status */
         }
 
         c->current_iter = now;
@@ -662,6 +736,8 @@ bool zap_loop_start(zap_t* c) {
     /* Check if we've exceeded measurement time */
     uint64_t now = zap_now_ns();
     if (c->start_time == 0) {
+        /* First measurement iteration - print status */
+        zap_status_measuring(c->name);
         c->start_time = now;
     } else {
         uint64_t elapsed = now - c->start_time;
@@ -703,14 +779,6 @@ void zap_loop_end(zap_t* c) {
 /* ========================================================================== */
 /* REPORTING IMPLEMENTATION                                                   */
 /* ========================================================================== */
-
-/* ANSI color codes */
-#define ZAP_COLOR_RESET   "\033[0m"
-#define ZAP_COLOR_BOLD    "\033[1m"
-#define ZAP_COLOR_GREEN   "\033[32m"
-#define ZAP_COLOR_CYAN    "\033[36m"
-#define ZAP_COLOR_YELLOW  "\033[33m"
-#define ZAP_COLOR_BLUE    "\033[34m"
 
 /* Greek mu (μ) for microseconds: UTF-8 = \316\274 */
 static void zap__format_time(double ns, char* buf, size_t bufsize) {
@@ -844,6 +912,9 @@ static void zap__print_histogram(const double* samples, size_t n,
 }
 
 void zap_report(const char* name, const zap_stats_t* stats) {
+    /* Clear any status message before printing results */
+    zap_status_clear();
+
     char median_buf[32], mean_buf[32], std_buf[32];
     char min_buf[32], max_buf[32];
 
@@ -947,8 +1018,13 @@ zap_runtime_group_t* zap_benchmark_group(const char* name) {
     g->config.measurement_time_ns = ZAP_DEFAULT_MEASUREMENT_TIME_NS;
     g->config.sample_count = ZAP_DEFAULT_SAMPLE_COUNT;
     g->active = true;
+    g->header_printed = false;  /* Defer header until first matching benchmark */
 
-    zap_report_group_start(name);
+    /* Only print header immediately if no filter is set */
+    if (!zap_g_config.filter) {
+        zap_report_group_start(name);
+        g->header_printed = true;
+    }
     return g;
 }
 
@@ -966,7 +1042,10 @@ void zap_group_sample_count(zap_runtime_group_t* g, size_t count) {
 
 void zap_group_finish(zap_runtime_group_t* g) {
     g->active = false;
-    zap_report_group_end();
+    /* Only print group end if header was printed */
+    if (g->header_printed) {
+        zap_report_group_end();
+    }
 }
 
 /* ========================================================================== */
@@ -1037,6 +1116,17 @@ static void zap__run_and_report(zap_t* c, const char* name) {
 
 void zap_bench_function(zap_runtime_group_t* g, const char* name,
                               zap_bencher_fn fn) {
+    /* Check filter before running */
+    if (!zap_matches_filter(name, zap_g_config.filter)) {
+        return;
+    }
+
+    /* Print deferred group header on first matching benchmark */
+    if (!g->header_printed) {
+        zap_report_group_start(g->name);
+        g->header_printed = true;
+    }
+
     zap_t c;
     zap__init_with_config(&c, name, &g->config);
 
@@ -1064,6 +1154,17 @@ void zap_bench_with_input(zap_runtime_group_t* g,
     /* Build full name: "label/param" */
     char full_name[256];
     snprintf(full_name, sizeof(full_name), "%s/%s", id.label, id.param_str);
+
+    /* Check filter before running */
+    if (!zap_matches_filter(full_name, zap_g_config.filter)) {
+        return;
+    }
+
+    /* Print deferred group header on first matching benchmark */
+    if (!g->header_printed) {
+        zap_report_group_start(g->name);
+        g->header_printed = true;
+    }
 
     zap_t c;
     zap__init_with_config(&c, full_name, &g->config);
@@ -1218,7 +1319,7 @@ bool zap_baseline_load(zap_baseline_t* b, const char* path) {
         fclose(f);
         return false;
     }
-    if (strncmp(line, "zap-baseline v1", 21) != 0) {
+    if (strncmp(line, "zap-baseline v1", 15) != 0) {
         fprintf(stderr, "Error: Invalid baseline file format\n");
         fclose(f);
         return false;
@@ -1301,6 +1402,9 @@ zap_comparison_t zap_compare(const zap_baseline_entry_t* baseline,
 
 void zap_report_comparison(const char* name, const zap_stats_t* stats,
                                  const zap_comparison_t* cmp) {
+    /* Clear any status message before printing results */
+    zap_status_clear();
+
     char median_buf[32], mean_buf[32], std_buf[32];
     char min_buf[32], max_buf[32], old_mean_buf[32];
 
@@ -1369,6 +1473,62 @@ void zap_report_comparison(const char* name, const zap_stats_t* stats,
 }
 
 /* ========================================================================== */
+/* FILTER MATCHING IMPLEMENTATION                                             */
+/* ========================================================================== */
+
+/*
+ * Simple glob-style pattern matching:
+ *   *  - matches zero or more characters
+ *   ?  - matches exactly one character
+ *   If no wildcards present, performs substring search
+ */
+static bool zap__glob_match(const char* pattern, const char* str) {
+    const char* p = pattern;
+    const char* s = str;
+    const char* star_p = NULL;
+    const char* star_s = NULL;
+
+    while (*s) {
+        if (*p == '*') {
+            star_p = p++;
+            star_s = s;
+        } else if (*p == '?' || *p == *s) {
+            p++;
+            s++;
+        } else if (star_p) {
+            p = star_p + 1;
+            s = ++star_s;
+        } else {
+            return false;
+        }
+    }
+
+    while (*p == '*') p++;
+    return *p == '\0';
+}
+
+bool zap_matches_filter(const char* name, const char* pattern) {
+    if (!pattern || !*pattern) return true;  /* No filter = match all */
+    if (!name) return false;
+
+    /* Check if pattern contains wildcards */
+    bool has_wildcard = false;
+    for (const char* p = pattern; *p; p++) {
+        if (*p == '*' || *p == '?') {
+            has_wildcard = true;
+            break;
+        }
+    }
+
+    if (has_wildcard) {
+        return zap__glob_match(pattern, name);
+    }
+
+    /* No wildcards: do case-sensitive substring search */
+    return strstr(name, pattern) != NULL;
+}
+
+/* ========================================================================== */
 /* CLI ARGUMENT PARSING                                                       */
 /* ========================================================================== */
 
@@ -1376,11 +1536,19 @@ void zap_parse_args(int argc, char** argv) {
     /* Default: auto-compare and auto-save to .zap/baseline */
     const char* default_baseline = ".zap/baseline";
     zap_g_config.baseline_path = default_baseline;
+    zap_g_config.filter = NULL;          /* No filter by default */
     zap_g_config.save_baseline = true;   /* Auto-save by default */
     zap_g_config.compare = true;         /* Auto-compare by default */
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--save-baseline") == 0) {
+        if (strcmp(argv[i], "--filter") == 0 || strcmp(argv[i], "-f") == 0) {
+            if (i + 1 < argc) {
+                zap_g_config.filter = argv[++i];
+            } else {
+                fprintf(stderr, "Error: --filter requires a pattern argument\n");
+                exit(1);
+            }
+        } else if (strcmp(argv[i], "--save-baseline") == 0) {
             zap_g_config.save_baseline = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 zap_g_config.baseline_path = argv[++i];
@@ -1399,15 +1567,23 @@ void zap_parse_args(int argc, char** argv) {
             zap_g_config.compare = false;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("Benchmark options:\n");
+            printf("  -f, --filter PATTERN    Only run benchmarks matching PATTERN\n");
+            printf("                          Supports * (any chars) and ? (single char)\n");
+            printf("                          Without wildcards, matches substring\n");
             printf("  --baseline [FILE]       Use specific baseline file (default: %s)\n",
                    default_baseline);
             printf("  --save-baseline [FILE]  Alias for --baseline\n");
             printf("  --compare [FILE]        Alias for --baseline\n");
             printf("  --no-save               Don't save results to baseline\n");
             printf("  --no-compare            Don't compare against baseline\n");
-            printf("  --help                  Show this help\n");
+            printf("  -h, --help              Show this help\n");
             printf("\nBy default, results are saved to and compared against '%s'\n",
                    default_baseline);
+            printf("\nFilter examples:\n");
+            printf("  --filter sort           Match benchmarks containing 'sort'\n");
+            printf("  --filter 'sort*'        Match benchmarks starting with 'sort'\n");
+            printf("  --filter '*hash*'       Match benchmarks containing 'hash'\n");
+            printf("  --filter 'bench_?'      Match 'bench_a', 'bench_b', etc.\n");
             exit(0);
         }
     }
@@ -1438,6 +1614,11 @@ void zap_parse_args(int argc, char** argv) {
 /* ========================================================================== */
 
 static void zap_run_bench_internal(const zap_bench_t* bench) {
+    /* Check filter before running */
+    if (!zap_matches_filter(bench->name, zap_g_config.filter)) {
+        return;
+    }
+
     zap_t c;
     zap_init(&c, bench->name);
 
@@ -1479,6 +1660,17 @@ static void zap_run_bench_internal(const zap_bench_t* bench) {
 }
 
 static void zap_run_group_internal(const zap_group_t* group) {
+    /* Check if any benchmarks match the filter before printing header */
+    size_t matching = 0;
+    if (zap_g_config.filter) {
+        for (size_t i = 0; i < group->count; i++) {
+            if (zap_matches_filter(group->benches[i].name, zap_g_config.filter)) {
+                matching++;
+            }
+        }
+        if (matching == 0) return;  /* Skip group entirely */
+    }
+
     zap_report_group_start(group->name);
 
     for (size_t i = 0; i < group->count; i++) {
