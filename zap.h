@@ -2829,8 +2829,6 @@ void zap_compare_end(zap_compare_ctx_t* ctx) {
             zap_impl_result_t* r = &ctx->results[i];
             if (!r->valid) continue;
 
-            bool is_baseline = (i == baseline_idx);
-
             char median_buf[32], mean_buf[32], std_buf[32];
             char min_buf[32], max_buf[32];
 
@@ -2841,13 +2839,7 @@ void zap_compare_end(zap_compare_ctx_t* ctx) {
             zap__format_time(r->stats.max, max_buf, sizeof(max_buf));
 
             // Implementation name header
-            if (is_baseline) {
-                printf("  %s%s%s %s[baseline]%s:\n",
-                       zap__c_cyan(), r->name, zap__c_reset(),
-                       zap__c_dim(), zap__c_reset());
-            } else {
-                printf("  %s%s%s:\n", zap__c_cyan(), r->name, zap__c_reset());
-            }
+            printf("  %s%s%s:\n", zap__c_cyan(), r->name, zap__c_reset());
 
             // Sample info
             printf("    %zu samples \303\227 %zu evals, median: %s%s%s\n",

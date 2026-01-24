@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-01-24
+
+### Added
+
+#### Comparison API
+- New API for comparing multiple implementations of the same operation
+- `zap_compare_group()`: Create a comparison group
+- `zap_compare_set_baseline()`: Set which implementation is the baseline
+- `zap_compare_begin()`: Start a comparison with a benchmark ID and input
+- `zap_compare_impl()`: Add an implementation to compare
+- `zap_compare_end()`: Finish comparison and print results
+- `zap_compare_group_finish()`: Clean up comparison group
+
+#### Comparison Output
+- Detailed per-implementation statistics (samples, evals, median, mean, stddev, range)
+- Throughput reporting per implementation
+- Speedup/slowdown vs baseline (e.g., "2.1x faster" or "0.8x (25% slower)")
+- Speedup vs all other implementations
+- Support for 2+ implementations (not limited to pairwise comparison)
+
+#### Examples
+- `example_compare.c`: Demonstrates the comparison API
+
+### Changed
+- Removed `[baseline]` label from comparison output for cleaner display
+
+### Fixed
+- Comparison results now show speedup vs all implementations, not just baseline
+
 ## [0.1.0] - 2025-01-24
 
 Initial release of Zap, an STB-style single-header benchmarking library for C.
