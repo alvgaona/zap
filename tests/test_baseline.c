@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdint.h>
 
 // Declarations from zap.h
 typedef struct zap_stats {
