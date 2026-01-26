@@ -13,6 +13,7 @@ int current_test_failed = 0;
 void test_stats(void);
 void test_duration(void);
 void test_filter(void);
+void test_baseline(void);
 
 int main(void) {
     printf("Running zap tests...\n\n");
@@ -25,6 +26,9 @@ int main(void) {
 
     printf("\nFilter matching:\n");
     test_filter();
+
+    printf("\nBaseline storage:\n");
+    test_baseline();
 
     TEST_REPORT();
 }
