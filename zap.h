@@ -1851,6 +1851,27 @@ zap_comparison_t zap_compare(const zap_baseline_entry_t* baseline,
     return cmp;
 }
 
+static double zap__speedup(double old_mean, double new_mean) {
+    return (new_mean > 0) ? (old_mean / new_mean) : 1.0;
+}
+
+static void zap__change_style(zap_change_t change, const char** color, const char** text) {
+    switch (change) {
+        case ZAP_IMPROVED:
+            *color = zap__c_green();
+            *text = "\342\206\221 faster";  // ↑ faster
+            break;
+        case ZAP_REGRESSED:
+            *color = zap__c_red();
+            *text = "\342\206\223 slower";  // ↓ slower
+            break;
+        default:
+            *color = zap__c_purple();
+            *text = "\342\211\210 no change";  // ≈ no change
+            break;
+    }
+}
+
 void zap_report_comparison(const char* name, const zap_stats_t* stats,
                                  const zap_comparison_t* cmp) {
     // Clear any status message before printing results
@@ -1905,30 +1926,15 @@ void zap_report_comparison(const char* name, const zap_stats_t* stats,
                zap__c_cyan(), tput_buf, zap__c_reset());
     }
 
-    // Show comparison
+    // Show comparison as speedup ratio (old_mean / new_mean)
     const char* change_color;
     const char* change_text;
-    char sign = (cmp->change_pct >= 0) ? '+' : '-';
-    double abs_pct = fabs(cmp->change_pct);
+    zap__change_style(cmp->change, &change_color, &change_text);
+    double ratio = zap__speedup(cmp->old_mean, cmp->new_mean);
 
-    switch (cmp->change) {
-        case ZAP_IMPROVED:
-            change_color = zap__c_green();
-            change_text = "\342\206\223 faster";  // ↓ faster
-            break;
-        case ZAP_REGRESSED:
-            change_color = zap__c_red();
-            change_text = "\342\206\221 slower";  // ↑ slower
-            break;
-        default:
-            change_color = zap__c_purple();
-            change_text = "\342\211\210";  // ≈
-            break;
-    }
-
-    printf("  %sBaseline:%s          %s%c%.2f%% %s%s (was %s)\n",
+    printf("  %sBaseline:%s          %s%.2fx %s%s (was %s)\n",
            zap__c_dim(), zap__c_reset(),
-           change_color, sign, abs_pct, change_text, zap__c_reset(), old_mean_buf);
+           change_color, ratio, change_text, zap__c_reset(), old_mean_buf);
 
     // Outliers if any
     size_t total_outliers = stats->outliers_low + stats->outliers_high;
@@ -1984,7 +1990,8 @@ void zap_report_json(const char* name, const zap_stats_t* stats,
     if (cmp) {
         printf(",\"baseline\":{");
         printf("\"old_mean_ns\":%.6f", cmp->old_mean);
-        printf(",\"change_pct\":%.4f", cmp->change_pct);
+        printf(",\"change_pct\":%.4f", fabs(cmp->change_pct));
+        printf(",\"speedup\":%.4f", zap__speedup(cmp->old_mean, cmp->new_mean));
         printf(",\"significant\":%s", cmp->significant ? "true" : "false");
         printf(",\"status\":\"%s\"",
                cmp->change == ZAP_IMPROVED ? "improved" :
@@ -2626,8 +2633,8 @@ void zap_compare_end(zap_compare_ctx_t* ctx) {
             const zap_baseline_entry_t* prev = zap_baseline_find(&zap_g_config.baseline, full_bench_name);
             if (prev && zap_g_config.compare) {
                 zap_comparison_t cmp = zap_compare(prev, &r->stats);
-                printf(",\"vs_previous\":{\"old_mean_ns\":%.6f,\"change_pct\":%.4f,\"status\":\"%s\"}",
-                       cmp.old_mean, cmp.change_pct,
+                printf(",\"vs_previous\":{\"old_mean_ns\":%.6f,\"change_pct\":%.4f,\"speedup\":%.4f,\"status\":\"%s\"}",
+                       cmp.old_mean, fabs(cmp.change_pct), zap__speedup(cmp.old_mean, cmp.new_mean),
                        cmp.change == ZAP_IMPROVED ? "improved" :
                        cmp.change == ZAP_REGRESSED ? "regressed" : "unchanged");
 
@@ -2732,27 +2739,12 @@ void zap_compare_end(zap_compare_ctx_t* ctx) {
 
                 const char* change_color;
                 const char* change_text;
-                char sign = (cmp.change_pct >= 0) ? '+' : '-';
-                double abs_pct = fabs(cmp.change_pct);
+                zap__change_style(cmp.change, &change_color, &change_text);
 
-                switch (cmp.change) {
-                    case ZAP_IMPROVED:
-                        change_color = zap__c_green();
-                        change_text = "\342\206\223 faster";
-                        break;
-                    case ZAP_REGRESSED:
-                        change_color = zap__c_red();
-                        change_text = "\342\206\221 slower";
-                        break;
-                    default:
-                        change_color = zap__c_purple();
-                        change_text = "\342\211\210";
-                        break;
-                }
-
-                printf("    %svs previous:%s      %s%c%.2f%% %s%s (was %s)\n",
+                printf("    %svs previous:%s      %s%.2fx %s%s (was %s)\n",
                        zap__c_dim(), zap__c_reset(),
-                       change_color, sign, abs_pct, change_text, zap__c_reset(), old_mean_buf);
+                       change_color, zap__speedup(cmp.old_mean, cmp.new_mean),
+                       change_text, zap__c_reset(), old_mean_buf);
 
                 // Track regression
                 if (zap_g_config.fail_threshold > 0.0 &&
