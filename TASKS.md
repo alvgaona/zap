@@ -35,3 +35,4 @@
 - [x] ZAP-030: Update all examples to use new unified API.
 - [x] ZAP-031: Update tests for new API.
 - [x] ZAP-032: Update CLAUDE.md documentation to reflect API changes.
+- [x] ZAP-033: Refactor argument parsing to use table-driven approach instead of if-else chains.
