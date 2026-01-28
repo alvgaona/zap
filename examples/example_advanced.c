@@ -48,7 +48,7 @@ static void bubble_sort(int* arr, size_t n) {
 static void bench_fib(zap_t* z) {
     int n = z->param ? *(int*)z->param : 10;
     int result;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         result = fibonacci(n);
         zap_black_box(result);
     }
@@ -64,7 +64,7 @@ typedef struct {
 static void bench_sort(zap_t* z) {
     sort_input_t* input = (sort_input_t*)z->param;
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memcpy(input->work, input->data, input->size * sizeof(int));
         bubble_sort(input->work, input->size);
         zap_black_box(input->work);
@@ -75,7 +75,7 @@ static void bench_sort(zap_t* z) {
 static void bench_malloc(zap_t* z) {
     size_t size = z->param ? *(size_t*)z->param : 64;
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         void* p = malloc(size);
         zap_black_box(p);
         free(p);

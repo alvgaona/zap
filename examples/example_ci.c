@@ -18,7 +18,7 @@
 /* Benchmark: allocation performance */
 void bench_malloc(zap_t* z) {
     size_t size = z->param ? *(size_t*)z->param : 64;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         void* p = malloc(size);
         zap_black_box(p);
         free(p);

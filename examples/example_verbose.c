@@ -26,7 +26,7 @@ void bench_memcpy(zap_t* z) {
 
     zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memcpy(dst, src, COPY_SIZE);
         zap_black_box(dst);
     }
@@ -43,7 +43,7 @@ void bench_compute(zap_t* z) {
     }
     zap_black_box(data);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         double sum = 0.0;
         for (int i = 0; i < 64; i++) {
             sum += data[i] * data[i];

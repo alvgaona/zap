@@ -48,7 +48,7 @@ static void reset_array(int* arr, size_t n) {
 void bench_qsort(zap_t* z) {
     sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         reset_array(ctx->arr, ctx->n);
         qsort(ctx->arr, ctx->n, sizeof(int), cmp_int);
         zap_black_box(ctx->arr);
@@ -73,7 +73,7 @@ static void bubble_sort(int* arr, size_t n) {
 void bench_bubble(zap_t* z) {
     sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         reset_array(ctx->arr, ctx->n);
         bubble_sort(ctx->arr, ctx->n);
         zap_black_box(ctx->arr);
@@ -98,7 +98,7 @@ static void insertion_sort(int* arr, size_t n) {
 void bench_insertion(zap_t* z) {
     sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         reset_array(ctx->arr, ctx->n);
         insertion_sort(ctx->arr, ctx->n);
         zap_black_box(ctx->arr);
@@ -120,7 +120,7 @@ void bench_memcpy(zap_t* z) {
     // Report throughput in bytes/sec
     zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memcpy(ctx->dst, ctx->src, ctx->n);
         zap_black_box(ctx->dst);
     }
@@ -132,7 +132,7 @@ void bench_memmove(zap_t* z) {
     // Report throughput in bytes/sec
     zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memmove(ctx->dst, ctx->src, ctx->n);
         zap_black_box(ctx->dst);
     }
@@ -144,7 +144,7 @@ void bench_manual_copy(zap_t* z) {
     // Report throughput in bytes/sec
     zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         for (size_t i = 0; i < ctx->n; i++) {
             ctx->dst[i] = ctx->src[i];
         }

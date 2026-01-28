@@ -14,7 +14,7 @@
  * EXAMPLE:
  *   void bench_example(zap_t* z) {
  *       int n = z->param ? *(int*)z->param : 10;
- *       ZAP_LOOP(z) {
+ *       ZAP_ITER(z) {
  *           result = do_work(n);
  *           zap_black_box(result);
  *       }
@@ -419,13 +419,13 @@ void zap_compare_group_finish(zap_compare_group_t* g);
 /* MACROS */
 
 /*
- * ZAP_LOOP - Main benchmarking loop
+ * ZAP_ITER - Main benchmarking loop
  * Usage:
- *   ZAP_LOOP(c) {
+ *   ZAP_ITER(c) {
  *       // code to benchmark
  *   }
  */
-#define ZAP_LOOP(c) \
+#define ZAP_ITER(c) \
     for (int _crit_done = 0; !_crit_done; ) \
         for (; zap_loop_start(c); _crit_done = 1, zap_loop_end(c)) \
             for (uint64_t _crit_i = 0; _crit_i < (c)->iterations; ++_crit_i)

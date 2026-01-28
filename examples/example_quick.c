@@ -15,7 +15,7 @@
 
 void bench_example(zap_t* z) {
     int x = 0;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x + 1;
         x = x * 2;
         zap_black_box(x);

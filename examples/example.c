@@ -6,7 +6,7 @@
 
 /* Example benchmark: Empty loop baseline */
 void bench_empty(zap_t* z) {
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         /* Empty - measures loop overhead */
     }
 }
@@ -14,7 +14,7 @@ void bench_empty(zap_t* z) {
 /* Example benchmark: Simple arithmetic */
 void bench_arithmetic(zap_t* z) {
     int x = 0;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x + 1;
         x = x * 2;
         x = x - 1;
@@ -38,7 +38,7 @@ static int fibonacci(int n) {
 void bench_fibonacci(zap_t* z) {
     int n = z->param ? *(int*)z->param : 10;
     int result;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         result = fibonacci(n);
         zap_black_box(result);
     }
@@ -53,7 +53,7 @@ void bench_compute(zap_t* z) {
     }
     zap_black_box(data);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         double sum = 0.0;
         for (int i = 0; i < 256; i++) {
             sum += data[i] * data[i];
@@ -65,7 +65,7 @@ void bench_compute(zap_t* z) {
 /* Example benchmark: Memory allocation */
 void bench_malloc(zap_t* z) {
     size_t size = z->param ? *(size_t*)z->param : 64;
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         void* p = malloc(size);
         zap_black_box(p);
         free(p);
@@ -83,7 +83,7 @@ void bench_memcpy_1mb(zap_t* z) {
     /* Set throughput: each iteration copies COPY_SIZE bytes */
     zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memcpy(dst, src, COPY_SIZE);
         zap_black_box(dst);
     }
@@ -98,7 +98,7 @@ void bench_memset_1mb(zap_t* z) {
     /* Set throughput: each iteration writes COPY_SIZE bytes */
     zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         memset(dst, 'x', COPY_SIZE);
         zap_black_box(dst);
     }

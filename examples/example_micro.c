@@ -17,7 +17,7 @@
 
 /* Benchmark: empty loop (measures overhead) */
 void bench_noop(zap_t* z) {
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         /* Empty - measures loop overhead */
     }
 }
@@ -26,7 +26,7 @@ void bench_noop(zap_t* z) {
 void bench_int_add(zap_t* z) {
     int x = 0;
     zap_black_box(x);
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x + 1;
         zap_black_box(x);
     }
@@ -36,7 +36,7 @@ void bench_int_add(zap_t* z) {
 void bench_int_mul(zap_t* z) {
     int x = 1;
     zap_black_box(x);
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x * 3;
         zap_black_box(x);
     }
@@ -46,7 +46,7 @@ void bench_int_mul(zap_t* z) {
 void bench_int_div(zap_t* z) {
     int x = 1000000;
     zap_black_box(x);
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x / 2;
         if (x == 0) x = 1000000;
         zap_black_box(x);
@@ -57,7 +57,7 @@ void bench_int_div(zap_t* z) {
 void bench_float_mul(zap_t* z) {
     double x = 1.5;
     zap_black_box(x);
-    ZAP_LOOP(z) {
+    ZAP_ITER(z) {
         x = x * 1.000001;
         zap_black_box(x);
     }
