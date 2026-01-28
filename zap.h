@@ -2142,177 +2142,232 @@ static void zap__finalize_atexit(void) {
     zap_finalize();
 }
 
+static void zap__print_help(const char* default_baseline) {
+    printf("Benchmark options:\n");
+    printf("  -f, --filter PATTERN    Only run benchmarks matching PATTERN\n");
+    printf("                          Supports * (any chars) and ? (single char)\n");
+    printf("                          Without wildcards, matches substring\n");
+    printf("  -t, --tag TAG           Only run benchmarks in groups with TAG\n");
+    printf("                          Can be specified multiple times (OR logic)\n");
+    printf("  --json                  Output results as JSON (one object per line)\n");
+    printf("  --fail-threshold PCT    Exit with code 1 if regression exceeds PCT%%\n");
+    printf("  --baseline [FILE]       Use specific baseline file (default: %s)\n",
+           default_baseline);
+    printf("  --save-baseline [FILE]  Alias for --baseline\n");
+    printf("  --compare [FILE]        Alias for --baseline\n");
+    printf("  --no-save               Don't save results to baseline\n");
+    printf("  --no-compare            Don't compare against baseline\n");
+    printf("  --color=MODE            Color output: auto (default), always, never\n");
+    printf("\nMeasurement options:\n");
+    printf("  --samples N             Number of samples to collect (default: 100)\n");
+    printf("  --warmup TIME           Warmup duration (default: 1s)\n");
+    printf("  --time TIME             Measurement duration (default: 3s)\n");
+    printf("  --min-iters N           Minimum iterations per sample\n");
+    printf("                          TIME formats: 5s, 500ms, 100us, 1m\n");
+    printf("\nOutput options:\n");
+    printf("  --env                   Show environment info (CPU, OS, SIMD)\n");
+    printf("  --histogram             Show distribution histograms\n");
+    printf("  --percentiles           Show p75/p90/p95/p99 percentiles\n");
+    printf("\nOther options:\n");
+    printf("  --dry-run, --list       List benchmarks without running them\n");
+    printf("  -h, --help              Show this help\n");
+    printf("\nBy default, results are saved to and compared against '%s'\n",
+           default_baseline);
+    printf("\nExamples:\n");
+    printf("  --filter sort           Match benchmarks containing 'sort'\n");
+    printf("  --filter 'sort*'        Match benchmarks starting with 'sort'\n");
+    printf("  --tag slow              Only run benchmarks tagged 'slow'\n");
+    printf("  -t unit -t fast         Run benchmarks tagged 'unit' OR 'fast'\n");
+    printf("  --json                  Output JSON for CI integration\n");
+    printf("  --fail-threshold 5      Fail CI if any benchmark regresses >5%%\n");
+    printf("  --samples 50 --time 2s  Quick run with fewer samples\n");
+    exit(0);
+}
+
+typedef enum {
+    ZAP_OPT_FLAG,
+    ZAP_OPT_STRING,
+    ZAP_OPT_SIZE,
+    ZAP_OPT_U64,
+    ZAP_OPT_DOUBLE,
+    ZAP_OPT_DURATION,
+    ZAP_OPT_PATH,     // optional string arg, sets explicit_path
+    ZAP_OPT_TAG,      // special: multi-value tag
+    ZAP_OPT_COLOR,    // special: --color=MODE
+    ZAP_OPT_HELP      // special: print help
+} zap__opt_type_t;
+
+typedef struct {
+    const char* name;
+    const char* alias;
+    zap__opt_type_t type;
+    void* dest;
+    const char* err;
+} zap__opt_t;
+
+static bool zap__match_opt(const char* arg, const zap__opt_t* opt) {
+    if (strcmp(arg, opt->name) == 0) return true;
+    if (opt->alias && strcmp(arg, opt->alias) == 0) return true;
+    return false;
+}
+
 void zap_parse_args(int argc, char** argv) {
-    // Default: auto-compare and auto-save to .zap/baseline
     const char* default_baseline = ".zap/baseline";
+
+    // Initialize defaults
     zap_g_config.baseline_path = default_baseline;
-    zap_g_config.filter = NULL;          // No filter by default
-    zap_g_config.fail_threshold = 0.0;   // No threshold by default
-    zap_g_config.save_baseline = true;   // Auto-save by default
-    zap_g_config.compare = true;         // Auto-compare by default
-    zap_g_config.json_output = false;    // Human-readable by default
+    zap_g_config.filter = NULL;
+    zap_g_config.fail_threshold = 0.0;
+    zap_g_config.save_baseline = true;
+    zap_g_config.compare = true;
+    zap_g_config.json_output = false;
     zap_g_config.has_regression = false;
     zap_g_config.color_mode = (zap_color_mode_t)ZAP_DEFAULT_COLOR_MODE;
     zap_g_config.dry_run = false;
-
-    // Output verbosity from compile-time defaults
     zap_g_config.show_env = ZAP_DEFAULT_SHOW_ENV;
     zap_g_config.show_histogram = ZAP_DEFAULT_SHOW_HISTOGRAM;
     zap_g_config.show_percentiles = ZAP_DEFAULT_SHOW_PERCENTILES;
-
-    // Measurement overrides from compile-time defaults
-    zap_g_config.cli_samples = 0;        // 0 = use per-group default
-    zap_g_config.cli_warmup_ns = 0;      // 0 = use per-group default
-    zap_g_config.cli_time_ns = 0;        // 0 = use per-group default
+    zap_g_config.cli_samples = 0;
+    zap_g_config.cli_warmup_ns = 0;
+    zap_g_config.cli_time_ns = 0;
     zap_g_config.cli_min_iters = ZAP_DEFAULT_MIN_ITERS;
     zap_g_config.cli_tag_count = 0;
 
+    // Option table
+    const zap__opt_t opts[] = {
+        {"--filter",         "-f", ZAP_OPT_STRING,   &zap_g_config.filter,           "pattern"},
+        {"--json",           NULL, ZAP_OPT_FLAG,     &zap_g_config.json_output,      NULL},
+        {"--fail-threshold", NULL, ZAP_OPT_DOUBLE,   &zap_g_config.fail_threshold,   "percentage"},
+        {"--baseline",       NULL, ZAP_OPT_PATH,     &zap_g_config.baseline_path,    NULL},
+        {"--compare",        NULL, ZAP_OPT_PATH,     &zap_g_config.baseline_path,    NULL},
+        {"--save-baseline",  NULL, ZAP_OPT_PATH,     &zap_g_config.baseline_path,    NULL},
+        {"--no-save",        NULL, ZAP_OPT_FLAG,     &zap_g_config.save_baseline,    NULL},
+        {"--no-compare",     NULL, ZAP_OPT_FLAG,     &zap_g_config.compare,          NULL},
+        {"--samples",        NULL, ZAP_OPT_SIZE,     &zap_g_config.cli_samples,      "number"},
+        {"--warmup",         NULL, ZAP_OPT_DURATION, &zap_g_config.cli_warmup_ns,    "duration"},
+        {"--time",           NULL, ZAP_OPT_DURATION, &zap_g_config.cli_time_ns,      "duration"},
+        {"--min-iters",      NULL, ZAP_OPT_U64,      &zap_g_config.cli_min_iters,    "number"},
+        {"--dry-run",        NULL, ZAP_OPT_FLAG,     &zap_g_config.dry_run,          NULL},
+        {"--list",           NULL, ZAP_OPT_FLAG,     &zap_g_config.dry_run,          NULL},
+        {"--env",            NULL, ZAP_OPT_FLAG,     &zap_g_config.show_env,         NULL},
+        {"--histogram",      NULL, ZAP_OPT_FLAG,     &zap_g_config.show_histogram,   NULL},
+        {"--percentiles",    NULL, ZAP_OPT_FLAG,     &zap_g_config.show_percentiles, NULL},
+        {"--tag",            "-t", ZAP_OPT_TAG,      NULL,                           "tag name"},
+        {"--color",          NULL, ZAP_OPT_COLOR,    NULL,                           NULL},
+        {"--help",           "-h", ZAP_OPT_HELP,     NULL,                           NULL},
+        {NULL, NULL, 0, NULL, NULL}
+    };
+
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--filter") == 0 || strcmp(argv[i], "-f") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.filter = argv[++i];
-            } else {
-                fprintf(stderr, "Error: --filter requires a pattern argument\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--json") == 0) {
-            zap_g_config.json_output = true;
-        } else if (strcmp(argv[i], "--fail-threshold") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.fail_threshold = atof(argv[++i]);
-            } else {
-                fprintf(stderr, "Error: --fail-threshold requires a percentage value\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--save-baseline") == 0) {
-            zap_g_config.save_baseline = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                zap_g_config.baseline_path = argv[++i];
-                zap_g_config.explicit_path = true;
-            }
-        } else if (strcmp(argv[i], "--baseline") == 0 ||
-                   strcmp(argv[i], "--compare") == 0) {
-            zap_g_config.compare = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                zap_g_config.baseline_path = argv[++i];
-                zap_g_config.explicit_path = true;
-            }
-        } else if (strcmp(argv[i], "--no-save") == 0) {
-            zap_g_config.save_baseline = false;
-        } else if (strcmp(argv[i], "--no-compare") == 0) {
-            zap_g_config.compare = false;
-        } else if (strncmp(argv[i], "--color", 7) == 0) {
-            const char* mode = NULL;
-            if (argv[i][7] == '=') {
-                mode = &argv[i][8];
-            } else if (i + 1 < argc && argv[i + 1][0] != '-') {
-                mode = argv[++i];
-            } else {
-                mode = "always";  // --color without arg means always
-            }
-            if (strcmp(mode, "auto") == 0) {
-                zap_g_config.color_mode = ZAP_COLOR_AUTO;
-            } else if (strcmp(mode, "always") == 0 || strcmp(mode, "yes") == 0) {
-                zap_g_config.color_mode = ZAP_COLOR_ALWAYS;
-            } else if (strcmp(mode, "never") == 0 || strcmp(mode, "no") == 0) {
-                zap_g_config.color_mode = ZAP_COLOR_NEVER;
-            } else {
-                fprintf(stderr, "Error: --color must be auto, always, or never\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--samples") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.cli_samples = (size_t)atoi(argv[++i]);
-            } else {
-                fprintf(stderr, "Error: --samples requires a number\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--warmup") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.cli_warmup_ns = zap__parse_duration(argv[++i]);
-            } else {
-                fprintf(stderr, "Error: --warmup requires a duration (e.g., 2s, 500ms)\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--time") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.cli_time_ns = zap__parse_duration(argv[++i]);
-            } else {
-                fprintf(stderr, "Error: --time requires a duration (e.g., 5s, 1000ms)\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--min-iters") == 0) {
-            if (i + 1 < argc) {
-                zap_g_config.cli_min_iters = (uint64_t)atoll(argv[++i]);
-            } else {
-                fprintf(stderr, "Error: --min-iters requires a number\n");
-                exit(1);
-            }
-        } else if (strcmp(argv[i], "--dry-run") == 0 || strcmp(argv[i], "--list") == 0) {
-            zap_g_config.dry_run = true;
-        } else if (strcmp(argv[i], "--env") == 0) {
-            zap_g_config.show_env = true;
-        } else if (strcmp(argv[i], "--histogram") == 0) {
-            zap_g_config.show_histogram = true;
-        } else if (strcmp(argv[i], "--percentiles") == 0) {
-            zap_g_config.show_percentiles = true;
-        } else if (strcmp(argv[i], "--tag") == 0 || strcmp(argv[i], "-t") == 0) {
-            if (i + 1 < argc) {
+        bool matched = false;
+
+        for (const zap__opt_t* opt = opts; opt->name; opt++) {
+            if (!zap__match_opt(argv[i], opt)) continue;
+            matched = true;
+
+            switch (opt->type) {
+            case ZAP_OPT_FLAG:
+                // --no-save and --no-compare set to false, others set to true
+                *(bool*)opt->dest = (strncmp(opt->name, "--no-", 5) != 0);
+                break;
+
+            case ZAP_OPT_STRING:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s\n", opt->name, opt->err);
+                    exit(1);
+                }
+                *(const char**)opt->dest = argv[++i];
+                break;
+
+            case ZAP_OPT_SIZE:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s\n", opt->name, opt->err);
+                    exit(1);
+                }
+                *(size_t*)opt->dest = (size_t)atoi(argv[++i]);
+                break;
+
+            case ZAP_OPT_U64:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s\n", opt->name, opt->err);
+                    exit(1);
+                }
+                *(uint64_t*)opt->dest = (uint64_t)atoll(argv[++i]);
+                break;
+
+            case ZAP_OPT_DOUBLE:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s\n", opt->name, opt->err);
+                    exit(1);
+                }
+                *(double*)opt->dest = atof(argv[++i]);
+                break;
+
+            case ZAP_OPT_DURATION:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s (e.g., 2s, 500ms)\n", opt->name, opt->err);
+                    exit(1);
+                }
+                *(uint64_t*)opt->dest = zap__parse_duration(argv[++i]);
+                break;
+
+            case ZAP_OPT_PATH:
+                // --baseline, --compare, --save-baseline: enable feature + optional path
+                if (strcmp(opt->name, "--save-baseline") == 0)
+                    zap_g_config.save_baseline = true;
+                else
+                    zap_g_config.compare = true;
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    *(const char**)opt->dest = argv[++i];
+                    zap_g_config.explicit_path = true;
+                }
+                break;
+
+            case ZAP_OPT_TAG:
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "Error: %s requires a %s\n", opt->name, opt->err);
+                    exit(1);
+                }
                 if (zap_g_config.cli_tag_count < ZAP_MAX_CLI_TAGS) {
                     strncpy(zap_g_config.cli_tags[zap_g_config.cli_tag_count],
                             argv[++i], sizeof(zap_g_config.cli_tags[0]) - 1);
-                    zap_g_config.cli_tags[zap_g_config.cli_tag_count]
-                        [sizeof(zap_g_config.cli_tags[0]) - 1] = '\0';
                     zap_g_config.cli_tag_count++;
                 } else {
                     fprintf(stderr, "Warning: Too many tags (max %d)\n", ZAP_MAX_CLI_TAGS);
                     i++;
                 }
-            } else {
-                fprintf(stderr, "Error: --tag requires a tag name\n");
-                exit(1);
+                break;
+
+            case ZAP_OPT_COLOR: {
+                const char* mode = NULL;
+                if (strlen(argv[i]) > 7 && argv[i][7] == '=') {
+                    mode = &argv[i][8];
+                } else if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    mode = argv[++i];
+                } else {
+                    mode = "always";
+                }
+                if (strcmp(mode, "auto") == 0)
+                    zap_g_config.color_mode = ZAP_COLOR_AUTO;
+                else if (strcmp(mode, "always") == 0 || strcmp(mode, "yes") == 0)
+                    zap_g_config.color_mode = ZAP_COLOR_ALWAYS;
+                else if (strcmp(mode, "never") == 0 || strcmp(mode, "no") == 0)
+                    zap_g_config.color_mode = ZAP_COLOR_NEVER;
+                else {
+                    fprintf(stderr, "Error: --color must be auto, always, or never\n");
+                    exit(1);
+                }
+                break;
             }
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Benchmark options:\n");
-            printf("  -f, --filter PATTERN    Only run benchmarks matching PATTERN\n");
-            printf("                          Supports * (any chars) and ? (single char)\n");
-            printf("                          Without wildcards, matches substring\n");
-            printf("  -t, --tag TAG           Only run benchmarks in groups with TAG\n");
-            printf("                          Can be specified multiple times (OR logic)\n");
-            printf("  --json                  Output results as JSON (one object per line)\n");
-            printf("  --fail-threshold PCT    Exit with code 1 if regression exceeds PCT%%\n");
-            printf("  --baseline [FILE]       Use specific baseline file (default: %s)\n",
-                   default_baseline);
-            printf("  --save-baseline [FILE]  Alias for --baseline\n");
-            printf("  --compare [FILE]        Alias for --baseline\n");
-            printf("  --no-save               Don't save results to baseline\n");
-            printf("  --no-compare            Don't compare against baseline\n");
-            printf("  --color=MODE            Color output: auto (default), always, never\n");
-            printf("\nMeasurement options:\n");
-            printf("  --samples N             Number of samples to collect (default: 100)\n");
-            printf("  --warmup TIME           Warmup duration (default: 1s)\n");
-            printf("  --time TIME             Measurement duration (default: 3s)\n");
-            printf("  --min-iters N           Minimum iterations per sample\n");
-            printf("                          TIME formats: 5s, 500ms, 100us, 1m\n");
-            printf("\nOutput options:\n");
-            printf("  --env                   Show environment info (CPU, OS, SIMD)\n");
-            printf("  --histogram             Show distribution histograms\n");
-            printf("  --percentiles           Show p75/p90/p95/p99 percentiles\n");
-            printf("\nOther options:\n");
-            printf("  --dry-run, --list       List benchmarks without running them\n");
-            printf("  -h, --help              Show this help\n");
-            printf("\nBy default, results are saved to and compared against '%s'\n",
-                   default_baseline);
-            printf("\nExamples:\n");
-            printf("  --filter sort           Match benchmarks containing 'sort'\n");
-            printf("  --filter 'sort*'        Match benchmarks starting with 'sort'\n");
-            printf("  --tag slow              Only run benchmarks tagged 'slow'\n");
-            printf("  -t unit -t fast         Run benchmarks tagged 'unit' OR 'fast'\n");
-            printf("  --json                  Output JSON for CI integration\n");
-            printf("  --fail-threshold 5      Fail CI if any benchmark regresses >5%%\n");
-            printf("  --samples 50 --time 2s  Quick run with fewer samples\n");
-            exit(0);
+
+            case ZAP_OPT_HELP:
+                zap__print_help(default_baseline);
+                break;
+            }
+            break;
         }
+
+        (void)matched; // ignore unknown args for now
     }
 
     // Skip baseline loading in dry run mode
