@@ -1,9 +1,10 @@
 /*
- * Advanced example demonstrating criterion-rs style features:
+ * Advanced example demonstrating:
  * - Runtime benchmark groups
  * - Per-group configuration
  * - Parameterized benchmarks
- * - ZAP_ITER macro
+ * - Tags for filtering
+ * - Setup/teardown hooks
  */
 
 #define ZAP_IMPLEMENTATION
@@ -12,9 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ========================================================================== */
-/* Helper functions                                                           */
-/* ========================================================================== */
+/* Helper functions */
 
 static int fibonacci(int n) {
     if (n <= 1) return n;
@@ -45,47 +44,47 @@ static void bubble_sort(int* arr, size_t n) {
     }
 }
 
-/* ========================================================================== */
-/* Traditional style (static groups with ZAP_LOOP)                      */
-/* ========================================================================== */
-
-void bench_fib_10(zap_t* c) {
-    int n = 10;
-    zap_black_box(n);
+/* Fibonacci benchmark - uses z->param for input */
+static void bench_fib(zap_t* z) {
+    int n = z->param ? *(int*)z->param : 10;
     int result;
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         result = fibonacci(n);
         zap_black_box(result);
     }
 }
 
-void bench_fib_20(zap_t* c) {
-    int n = 20;
-    zap_black_box(n);
-    int result;
-    ZAP_LOOP(c) {
-        result = fibonacci(n);
-        zap_black_box(result);
+/* Sorting benchmark */
+typedef struct {
+    int* data;
+    int* work;
+    size_t size;
+} sort_input_t;
+
+static void bench_sort(zap_t* z) {
+    sort_input_t* input = (sort_input_t*)z->param;
+
+    ZAP_LOOP(z) {
+        memcpy(input->work, input->data, input->size * sizeof(int));
+        bubble_sort(input->work, input->size);
+        zap_black_box(input->work);
     }
 }
 
-ZAP_GROUP(traditional_benches, bench_fib_10, bench_fib_20);
+/* Memory allocation benchmark */
+static void bench_malloc(zap_t* z) {
+    size_t size = z->param ? *(size_t*)z->param : 64;
 
-/* ========================================================================== */
-/* Runtime group with configuration (criterion-rs style)                      */
-/* ========================================================================== */
-
-static void iter_fib(zap_bencher_t* b, void* param) {
-    int n = *(int*)param;
-    int result;
-    ZAP_ITER(b, {
-        result = fibonacci(n);
-        zap_black_box(result);
-    });
+    ZAP_LOOP(z) {
+        void* p = malloc(size);
+        zap_black_box(p);
+        free(p);
+    }
 }
 
-static void bench_fibonacci_group(void) {
-    /* Create a runtime group with custom configuration */
+/* Benchmark groups */
+
+static void run_fibonacci_benchmarks(void) {
     zap_runtime_group_t* group = zap_benchmark_group("fibonacci");
 
     /* Tag this group for filtering */
@@ -102,35 +101,14 @@ static void bench_fibonacci_group(void) {
     size_t num_sizes = sizeof(sizes) / sizeof(sizes[0]);
 
     for (size_t i = 0; i < num_sizes; i++) {
-        zap_benchmark_id_t id = zap_benchmark_id("fib", sizes[i]);
-        zap_bench_with_input(group, id, &sizes[i], sizeof(int), iter_fib);
+        zap_bench_with_input(group, zap_benchmark_id("fib", sizes[i]),
+                             &sizes[i], sizeof(int), bench_fib);
     }
 
     zap_group_finish(group);
 }
 
-/* ========================================================================== */
-/* Sorting benchmarks with parameterized sizes                                */
-/* ========================================================================== */
-
-typedef struct {
-    int* data;
-    int* work;  /* Working copy for sorting */
-    size_t size;
-} sort_input_t;
-
-static void iter_sort(zap_bencher_t* b, void* param) {
-    sort_input_t* input = (sort_input_t*)param;
-
-    ZAP_ITER(b, {
-        /* Copy data to work buffer before each sort */
-        memcpy(input->work, input->data, input->size * sizeof(int));
-        bubble_sort(input->work, input->size);
-        zap_black_box(input->work);
-    });
-}
-
-static void bench_sorting_group(void) {
+static void run_sorting_benchmarks(void) {
     zap_runtime_group_t* group = zap_benchmark_group("sorting");
 
     /* Tag this group */
@@ -154,8 +132,8 @@ static void bench_sorting_group(void) {
         input.work = malloc(n * sizeof(int));
         fill_random(input.data, n);
 
-        zap_benchmark_id_t id = zap_benchmark_id("bubble_sort", (int64_t)n);
-        zap_bench_with_input(group, id, &input, sizeof(input), iter_sort);
+        zap_bench_with_input(group, zap_benchmark_id("bubble_sort", (int64_t)n),
+                             &input, sizeof(input), bench_sort);
 
         free(input.data);
         free(input.work);
@@ -164,21 +142,7 @@ static void bench_sorting_group(void) {
     zap_group_finish(group);
 }
 
-/* ========================================================================== */
-/* Memory allocation benchmarks                                               */
-/* ========================================================================== */
-
-static void iter_malloc(zap_bencher_t* b, void* param) {
-    size_t size = *(size_t*)param;
-
-    ZAP_ITER(b, {
-        void* p = malloc(size);
-        zap_black_box(p);
-        free(p);
-    });
-}
-
-static void bench_memory_group(void) {
+static void run_memory_benchmarks(void) {
     zap_runtime_group_t* group = zap_benchmark_group("memory");
 
     /* Tag this group */
@@ -196,28 +160,15 @@ static void bench_memory_group(void) {
             snprintf(param_str, sizeof(param_str), "%zuB", sizes[i]);
         }
 
-        zap_benchmark_id_t id = zap_benchmark_id_str("malloc", param_str);
-        zap_bench_with_input(group, id, &sizes[i], sizeof(size_t), iter_malloc);
+        zap_bench_with_input(group, zap_benchmark_id_str("malloc", param_str),
+                             &sizes[i], sizeof(size_t), bench_malloc);
     }
 
     zap_group_finish(group);
 }
 
-/* ========================================================================== */
-/* Main entry point                                                           */
-/* ========================================================================== */
-
-int main(int argc, char** argv) {
-    zap_parse_args(argc, argv);
-
-    /* Run traditional static group */
-    zap_run_group_internal(&traditional_benches);
-
-    /* Run runtime groups with parameterized benchmarks */
-    bench_fibonacci_group();
-    bench_sorting_group();
-    bench_memory_group();
-
-    zap_finalize();
-    return 0;
+ZAP_MAIN {
+    run_fibonacci_benchmarks();
+    run_sorting_benchmarks();
+    run_memory_benchmarks();
 }

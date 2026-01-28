@@ -45,14 +45,14 @@ static void reset_array(int* arr, size_t n) {
 /*
  * Implementation 1: Standard library qsort
  */
-void bench_qsort(zap_bencher_t* b, void* param) {
-    sort_ctx_t* ctx = (sort_ctx_t*)param;
+void bench_qsort(zap_t* z) {
+    sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         reset_array(ctx->arr, ctx->n);
         qsort(ctx->arr, ctx->n, sizeof(int), cmp_int);
         zap_black_box(ctx->arr);
-    });
+    }
 }
 
 /*
@@ -70,14 +70,14 @@ static void bubble_sort(int* arr, size_t n) {
     }
 }
 
-void bench_bubble(zap_bencher_t* b, void* param) {
-    sort_ctx_t* ctx = (sort_ctx_t*)param;
+void bench_bubble(zap_t* z) {
+    sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         reset_array(ctx->arr, ctx->n);
         bubble_sort(ctx->arr, ctx->n);
         zap_black_box(ctx->arr);
-    });
+    }
 }
 
 /*
@@ -95,14 +95,14 @@ static void insertion_sort(int* arr, size_t n) {
     }
 }
 
-void bench_insertion(zap_bencher_t* b, void* param) {
-    sort_ctx_t* ctx = (sort_ctx_t*)param;
+void bench_insertion(zap_t* z) {
+    sort_ctx_t* ctx = (sort_ctx_t*)z->param;
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         reset_array(ctx->arr, ctx->n);
         insertion_sort(ctx->arr, ctx->n);
         zap_black_box(ctx->arr);
-    });
+    }
 }
 
 /*
@@ -114,42 +114,42 @@ typedef struct {
     size_t n;
 } memcpy_ctx_t;
 
-void bench_memcpy(zap_bencher_t* b, void* param) {
-    memcpy_ctx_t* ctx = (memcpy_ctx_t*)param;
+void bench_memcpy(zap_t* z) {
+    memcpy_ctx_t* ctx = (memcpy_ctx_t*)z->param;
 
     // Report throughput in bytes/sec
-    zap_bencher_set_throughput_bytes(b, ctx->n);
+    zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         memcpy(ctx->dst, ctx->src, ctx->n);
         zap_black_box(ctx->dst);
-    });
+    }
 }
 
-void bench_memmove(zap_bencher_t* b, void* param) {
-    memcpy_ctx_t* ctx = (memcpy_ctx_t*)param;
+void bench_memmove(zap_t* z) {
+    memcpy_ctx_t* ctx = (memcpy_ctx_t*)z->param;
 
     // Report throughput in bytes/sec
-    zap_bencher_set_throughput_bytes(b, ctx->n);
+    zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         memmove(ctx->dst, ctx->src, ctx->n);
         zap_black_box(ctx->dst);
-    });
+    }
 }
 
-void bench_manual_copy(zap_bencher_t* b, void* param) {
-    memcpy_ctx_t* ctx = (memcpy_ctx_t*)param;
+void bench_manual_copy(zap_t* z) {
+    memcpy_ctx_t* ctx = (memcpy_ctx_t*)z->param;
 
     // Report throughput in bytes/sec
-    zap_bencher_set_throughput_bytes(b, ctx->n);
+    zap_set_throughput_bytes(z, ctx->n);
 
-    ZAP_ITER(b, {
+    ZAP_LOOP(z) {
         for (size_t i = 0; i < ctx->n; i++) {
             ctx->dst[i] = ctx->src[i];
         }
         zap_black_box(ctx->dst);
-    });
+    }
 }
 
 int main(int argc, char** argv) {
@@ -255,5 +255,5 @@ int main(int argc, char** argv) {
 
     zap_compare_group_finish(memcpy_group);
 
-    return zap_finalize();
+    return 0;
 }

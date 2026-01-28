@@ -12,14 +12,23 @@
  *     #include "zap.h"
  *
  * EXAMPLE:
- *   void bench_example(zap_t* c) {
- *       ZAP_LOOP(c) {
- *           // code to benchmark
+ *   void bench_example(zap_t* z) {
+ *       int n = z->param ? *(int*)z->param : 10;
+ *       ZAP_LOOP(z) {
+ *           result = do_work(n);
+ *           zap_black_box(result);
  *       }
  *   }
  *
- *   ZAP_GROUP(my_benches, bench_example);
- *   ZAP_MAIN(my_benches);
+ *   ZAP_MAIN {
+ *       zap_runtime_group_t* g = zap_benchmark_group("my_benches");
+ *       int sizes[] = {10, 100, 1000};
+ *       for (int i = 0; i < 3; i++) {
+ *           zap_bench_with_input(g, zap_benchmark_id("test", sizes[i]),
+ *                                &sizes[i], sizeof(int), bench_example);
+ *       }
+ *       zap_group_finish(g);
+ *   }
  *
  * LICENSE: MIT (see end of file)
  */
@@ -119,7 +128,7 @@ typedef struct zap_bench_config {
 } zap_bench_config_t;
 
 // Benchmark state
-typedef struct criterion {
+typedef struct zap {
     const char* name;
     uint64_t    iterations;
     uint64_t    current_iter;
@@ -134,28 +143,14 @@ typedef struct criterion {
     // Throughput tracking
     zap_throughput_type_t throughput_type;
     size_t throughput_value;
+    // Parameterized benchmark support
+    void*       param;
+    size_t      param_size;
+    struct zap_runtime_group* group;
 } zap_t;
 
-// Forward declaration for bencher
-typedef struct zap_bencher zap_bencher_t;
-
-// Benchmark function signatures
+// Benchmark function signature
 typedef void (*zap_bench_fn)(zap_t*);
-typedef void (*zap_bencher_fn)(zap_bencher_t*);
-typedef void (*zap_param_fn)(zap_bencher_t*, void* param);
-
-// Benchmark entry
-typedef struct zap_bench {
-    const char*        name;
-    zap_bench_fn func;
-} zap_bench_t;
-
-// Static benchmark group (from ZAP_GROUP macro)
-typedef struct zap_group {
-    const char*             name;
-    const zap_bench_t* benches;
-    size_t                  count;
-} zap_group_t;
 
 // Setup/teardown function types
 typedef void (*zap_setup_fn)(void);
@@ -179,12 +174,6 @@ typedef struct zap_runtime_group {
     size_t                   tag_count;
 } zap_runtime_group_t;
 
-// Bencher - passed to iter() style benchmarks
-struct zap_bencher {
-    zap_t*              state;
-    zap_runtime_group_t* group;
-    char                      full_name[256];
-};
 
 // Benchmark ID for parameterized benchmarks
 typedef struct zap_benchmark_id {
@@ -357,11 +346,7 @@ void zap_report_json(const char* name, const zap_stats_t* stats,
 void zap_report_group_start(const char* name);
 void zap_report_group_end(void);
 
-// Runner
-void zap_run_bench(const zap_bench_t* bench);
-void zap_run_group(const zap_group_t* group);
-
-// Runtime benchmark groups (criterion-rs style)
+// Runtime benchmark groups
 zap_runtime_group_t* zap_benchmark_group(const char* name);
 void zap_group_measurement_time(zap_runtime_group_t* g, uint64_t ns);
 void zap_group_warmup_time(zap_runtime_group_t* g, uint64_t ns);
@@ -375,27 +360,17 @@ void zap_group_finish(zap_runtime_group_t* g);
 zap_benchmark_id_t zap_benchmark_id(const char* label, int64_t param);
 zap_benchmark_id_t zap_benchmark_id_str(const char* label, const char* param);
 
-// Bencher functions (iter-style API)
+// Runtime benchmark functions
 void zap_bench_function(zap_runtime_group_t* g, const char* name,
-                              zap_bencher_fn fn);
+                        zap_bench_fn fn);
 void zap_bench_with_input(zap_runtime_group_t* g,
-                                zap_benchmark_id_t id,
-                                void* input, size_t input_size,
-                                zap_param_fn fn);
-
-// iter() - run the benchmark closure
-void zap_bencher_iter(zap_bencher_t* b, void (*fn)(void));
-void zap_bencher_iter_custom(zap_bencher_t* b,
-                                   void (*setup)(void*),
-                                   void (*routine)(void*),
-                                   void (*teardown)(void*),
-                                   void* user_data);
+                          zap_benchmark_id_t id,
+                          void* input, size_t input_size,
+                          zap_bench_fn fn);
 
 // Throughput configuration
-void zap_set_throughput_bytes(zap_t* c, size_t bytes_per_iter);
-void zap_set_throughput_elements(zap_t* c, size_t elements_per_iter);
-void zap_bencher_set_throughput_bytes(zap_bencher_t* b, size_t bytes_per_iter);
-void zap_bencher_set_throughput_elements(zap_bencher_t* b, size_t elements_per_iter);
+void zap_set_throughput_bytes(zap_t* z, size_t bytes_per_iter);
+void zap_set_throughput_elements(zap_t* z, size_t elements_per_iter);
 
 // Baseline management
 void zap_baseline_init(zap_baseline_t* b);
@@ -437,7 +412,7 @@ void zap_compare_tag(zap_compare_group_t* g, const char* tag);
 zap_compare_ctx_t* zap_compare_begin(zap_compare_group_t* g,
                                      zap_benchmark_id_t id,
                                      void* input, size_t input_size);
-void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_param_fn fn);
+void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_bench_fn fn);
 void zap_compare_end(zap_compare_ctx_t* ctx);
 void zap_compare_group_finish(zap_compare_group_t* g);
 
@@ -451,40 +426,9 @@ void zap_compare_group_finish(zap_compare_group_t* g);
  *   }
  */
 #define ZAP_LOOP(c) \
-    while (zap_loop_start(c)) \
-        for (uint64_t _crit_i = 0; \
-             _crit_i < (c)->iterations; \
-             ++_crit_i)
-
-/*
- * After the loop body, we need to call zap_loop_end.
- * This is handled by wrapping in a do-while with cleanup.
- * Actually, let's use a different approach with a for-loop wrapper.
- */
-#undef ZAP_LOOP
-#define ZAP_LOOP(c) \
     for (int _crit_done = 0; !_crit_done; ) \
         for (; zap_loop_start(c); _crit_done = 1, zap_loop_end(c)) \
             for (uint64_t _crit_i = 0; _crit_i < (c)->iterations; ++_crit_i)
-
-/*
- * ZAP_ITER - Single expression benchmark (like b.iter(|| expr))
- * Usage:
- *   void bench_example(zap_bencher_t* b) {
- *       int data = 42;
- *       ZAP_ITER(b, {
- *           result = expensive_operation(data);
- *           zap_black_box(result);
- *       });
- *   }
- */
-#define ZAP_ITER(b, block) \
-    do { \
-        zap_t* _c = (b)->state; \
-        ZAP_LOOP(_c) { \
-            block \
-        } \
-    } while (0)
 
 /*
  * Duration helper macros (convert to nanoseconds)
@@ -494,76 +438,22 @@ void zap_compare_group_finish(zap_compare_group_t* g);
 #define ZAP_MICROS(us)      ((uint64_t)(us) * 1000ULL)
 
 /*
- * ZAP_GROUP - Define a benchmark group
+ * ZAP_MAIN - Define main function for benchmarks
  * Usage:
- *   ZAP_GROUP(group_name, bench1, bench2, bench3);
+ *   ZAP_MAIN {
+ *       zap_runtime_group_t* g = zap_benchmark_group("my_group");
+ *       zap_bench_with_input(g, zap_benchmark_id("test", 100), &param, sizeof(param), bench_fn);
+ *       zap_group_finish(g);
+ *   }
  */
-#define ZAP_GROUP(grpname, ...) \
-    static const zap_bench_t grpname##_benches[] = { \
-        ZAP__EXPAND_BENCHES(__VA_ARGS__) \
-    }; \
-    static const zap_group_t grpname = { \
-        #grpname, \
-        grpname##_benches, \
-        sizeof(grpname##_benches) / sizeof(grpname##_benches[0]) \
-    }
-
-// Helper macro to expand benchmark function list
-#define ZAP__EXPAND_BENCHES(...) \
-    ZAP__MAP(ZAP__BENCH_ENTRY, __VA_ARGS__)
-
-#define ZAP__BENCH_ENTRY(fn) { #fn, fn },
-
-// Macro mapping utilities
-#define ZAP__MAP(macro, ...) \
-    ZAP__MAP_(__VA_ARGS__, \
-        ZAP__MAP_16, ZAP__MAP_15, ZAP__MAP_14, \
-        ZAP__MAP_13, ZAP__MAP_12, ZAP__MAP_11, \
-        ZAP__MAP_10, ZAP__MAP_9,  ZAP__MAP_8, \
-        ZAP__MAP_7,  ZAP__MAP_6,  ZAP__MAP_5, \
-        ZAP__MAP_4,  ZAP__MAP_3,  ZAP__MAP_2, \
-        ZAP__MAP_1)(macro, __VA_ARGS__)
-
-#define ZAP__MAP_(...) ZAP__MAP_N(__VA_ARGS__)
-#define ZAP__MAP_N(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,N,...) N
-
-#define ZAP__MAP_1(m,a)  m(a)
-#define ZAP__MAP_2(m,a,...)  m(a) ZAP__MAP_1(m,__VA_ARGS__)
-#define ZAP__MAP_3(m,a,...)  m(a) ZAP__MAP_2(m,__VA_ARGS__)
-#define ZAP__MAP_4(m,a,...)  m(a) ZAP__MAP_3(m,__VA_ARGS__)
-#define ZAP__MAP_5(m,a,...)  m(a) ZAP__MAP_4(m,__VA_ARGS__)
-#define ZAP__MAP_6(m,a,...)  m(a) ZAP__MAP_5(m,__VA_ARGS__)
-#define ZAP__MAP_7(m,a,...)  m(a) ZAP__MAP_6(m,__VA_ARGS__)
-#define ZAP__MAP_8(m,a,...)  m(a) ZAP__MAP_7(m,__VA_ARGS__)
-#define ZAP__MAP_9(m,a,...)  m(a) ZAP__MAP_8(m,__VA_ARGS__)
-#define ZAP__MAP_10(m,a,...) m(a) ZAP__MAP_9(m,__VA_ARGS__)
-#define ZAP__MAP_11(m,a,...) m(a) ZAP__MAP_10(m,__VA_ARGS__)
-#define ZAP__MAP_12(m,a,...) m(a) ZAP__MAP_11(m,__VA_ARGS__)
-#define ZAP__MAP_13(m,a,...) m(a) ZAP__MAP_12(m,__VA_ARGS__)
-#define ZAP__MAP_14(m,a,...) m(a) ZAP__MAP_13(m,__VA_ARGS__)
-#define ZAP__MAP_15(m,a,...) m(a) ZAP__MAP_14(m,__VA_ARGS__)
-#define ZAP__MAP_16(m,a,...) m(a) ZAP__MAP_15(m,__VA_ARGS__)
-
-/*
- * ZAP_MAIN - Define main function that runs benchmark groups
- * Usage:
- *   ZAP_MAIN(group1, group2);
- *
- * Supports CLI arguments:
- *   --save-baseline [FILE]  Save results to baseline file
- *   --baseline [FILE]       Compare against baseline file
- *   --compare [FILE]        Alias for --baseline
- *   --json                  Output results as JSON
- *   --fail-threshold PCT    Exit with code 1 if regression > PCT%
- */
-#define ZAP_MAIN(...) \
+#define ZAP_MAIN \
+    static void zap__run_benchmarks(void); \
     int main(int argc, char** argv) { \
         zap_parse_args(argc, argv); \
-        ZAP__MAP(ZAP__RUN_GROUP, __VA_ARGS__) \
-        return zap_finalize(); \
-    }
-
-#define ZAP__RUN_GROUP(group) zap_run_group_internal(&group);
+        zap__run_benchmarks(); \
+        return 0; \
+    } \
+    static void zap__run_benchmarks(void)
 
 #ifdef __cplusplus
 }
@@ -1477,39 +1367,6 @@ void zap_report_group_end(void) {
     printf("\n");
 }
 
-/* RUNNER IMPLEMENTATION */
-
-void zap_run_bench(const zap_bench_t* bench) {
-    zap_t c;
-    zap_init(&c, bench->name);
-
-    // Run the benchmark function
-    bench->func(&c);
-
-    // Warn if time limit was reached before collecting all samples
-    if (c.sample_count < c.config.sample_count) {
-        printf("%sWarning: time limit reached, collected %zu/%zu samples%s\n",
-               zap__c_yellow(), c.sample_count, c.config.sample_count, zap__c_reset());
-    }
-
-    // Compute and report statistics
-    zap_stats_t stats = zap_compute_stats(c.samples, c.sample_count);
-    stats.iterations = c.iterations;
-    zap_report(bench->name, &stats);
-
-    zap_cleanup(&c);
-}
-
-void zap_run_group(const zap_group_t* group) {
-    zap_report_group_start(group->name);
-
-    for (size_t i = 0; i < group->count; i++) {
-        zap_run_bench(&group->benches[i]);
-    }
-
-    zap_report_group_end();
-}
-
 /* RUNTIME BENCHMARK GROUPS */
 
 static zap_runtime_group_t zap__current_group = {0};
@@ -1698,7 +1555,7 @@ static void zap__run_and_report(zap_t* c, const char* group_name, const char* na
 }
 
 void zap_bench_function(zap_runtime_group_t* g, const char* name,
-                              zap_bencher_fn fn) {
+                        zap_bench_fn fn) {
     // Check filter before running
     if (!zap_matches_filter(name, zap_g_config.filter)) {
         return;
@@ -1727,30 +1584,23 @@ void zap_bench_function(zap_runtime_group_t* g, const char* name,
         zap__setup_called = true;
     }
 
-    zap_t c;
-    zap__init_with_config(&c, name, &g->config);
-
-    zap_bencher_t b;
-    b.state = &c;
-    b.group = g;
-    strncpy(b.full_name, name, sizeof(b.full_name) - 1);
-    b.full_name[sizeof(b.full_name) - 1] = '\0';
+    zap_t z;
+    zap__init_with_config(&z, name, &g->config);
+    z.group = g;
 
     // Run the benchmark
-    fn(&b);
+    fn(&z);
 
     // Report results
-    zap__run_and_report(&c, g->name, name);
+    zap__run_and_report(&z, g->name, name);
 
-    zap_cleanup(&c);
+    zap_cleanup(&z);
 }
 
 void zap_bench_with_input(zap_runtime_group_t* g,
-                                zap_benchmark_id_t id,
-                                void* input, size_t input_size,
-                                zap_param_fn fn) {
-    (void)input_size;  // Reserved for future use
-
+                          zap_benchmark_id_t id,
+                          void* input, size_t input_size,
+                          zap_bench_fn fn) {
     // Build full name: "label/param"
     char full_name[256];
     snprintf(full_name, sizeof(full_name), "%s/%s", id.label, id.param_str);
@@ -1783,66 +1633,31 @@ void zap_bench_with_input(zap_runtime_group_t* g,
         zap__setup_called = true;
     }
 
-    zap_t c;
-    zap__init_with_config(&c, full_name, &g->config);
+    zap_t z;
+    zap__init_with_config(&z, full_name, &g->config);
+    z.group = g;
+    z.param = input;
+    z.param_size = input_size;
 
-    zap_bencher_t b;
-    b.state = &c;
-    b.group = g;
-    strncpy(b.full_name, full_name, sizeof(b.full_name) - 1);
-    b.full_name[sizeof(b.full_name) - 1] = '\0';
-
-    // Run the benchmark with input
-    fn(&b, input);
+    // Run the benchmark
+    fn(&z);
 
     // Report results
-    zap__run_and_report(&c, g->name, full_name);
+    zap__run_and_report(&z, g->name, full_name);
 
-    zap_cleanup(&c);
-}
-
-void zap_bencher_iter(zap_bencher_t* b, void (*fn)(void)) {
-    zap_t* c = b->state;
-
-    ZAP_LOOP(c) {
-        fn();
-    }
-}
-
-void zap_bencher_iter_custom(zap_bencher_t* b,
-                                   void (*setup)(void*),
-                                   void (*routine)(void*),
-                                   void (*teardown)(void*),
-                                   void* user_data) {
-    zap_t* c = b->state;
-
-    if (setup) setup(user_data);
-
-    ZAP_LOOP(c) {
-        routine(user_data);
-    }
-
-    if (teardown) teardown(user_data);
+    zap_cleanup(&z);
 }
 
 /* THROUGHPUT CONFIGURATION */
 
-void zap_set_throughput_bytes(zap_t* c, size_t bytes_per_iter) {
-    c->throughput_type = ZAP_THROUGHPUT_BYTES;
-    c->throughput_value = bytes_per_iter;
+void zap_set_throughput_bytes(zap_t* z, size_t bytes_per_iter) {
+    z->throughput_type = ZAP_THROUGHPUT_BYTES;
+    z->throughput_value = bytes_per_iter;
 }
 
-void zap_set_throughput_elements(zap_t* c, size_t elements_per_iter) {
-    c->throughput_type = ZAP_THROUGHPUT_ELEMENTS;
-    c->throughput_value = elements_per_iter;
-}
-
-void zap_bencher_set_throughput_bytes(zap_bencher_t* b, size_t bytes_per_iter) {
-    zap_set_throughput_bytes(b->state, bytes_per_iter);
-}
-
-void zap_bencher_set_throughput_elements(zap_bencher_t* b, size_t elements_per_iter) {
-    zap_set_throughput_elements(b->state, elements_per_iter);
+void zap_set_throughput_elements(zap_t* z, size_t elements_per_iter) {
+    z->throughput_type = ZAP_THROUGHPUT_ELEMENTS;
+    z->throughput_value = elements_per_iter;
 }
 
 /* GLOBAL CONFIG */
@@ -2278,6 +2093,55 @@ static uint64_t zap__parse_duration(const char* str) {
     return (uint64_t)(value * 1e9);
 }
 
+static bool zap__finalized = false;
+static int zap__exit_code = 0;
+
+static int zap_finalize(void) {
+    // Ensure idempotence - only run once
+    if (zap__finalized) {
+        return zap__exit_code;
+    }
+    zap__finalized = true;
+
+    // Nothing to finalize in dry run mode
+    if (zap_g_config.dry_run) {
+        return 0;
+    }
+
+    // Save baseline if requested
+    if (zap_g_config.save_baseline && zap_g_config.baseline.count > 0) {
+        if (zap_baseline_save(&zap_g_config.baseline,
+                                    zap_g_config.baseline_path)) {
+            // Only print message for explicit path, not auto-save
+            if (!zap_g_config.json_output && zap_g_config.explicit_path) {
+                printf("%sBaseline saved to:%s %s%s%s\n",
+                       zap__c_purple(), zap__c_reset(),
+                       zap__c_cyan(), zap_g_config.baseline_path, zap__c_reset());
+            }
+        }
+    }
+
+    // Check for regressions beyond threshold
+    if (zap_g_config.has_regression) {
+        if (!zap_g_config.json_output) {
+            fprintf(stderr, "%sError: Benchmark regression exceeded threshold (%.1f%%)%s\n",
+                    zap__c_red(), zap_g_config.fail_threshold, zap__c_reset());
+        }
+    }
+
+    // Cleanup
+    if (zap_g_config.baseline.entries) {
+        zap_baseline_free(&zap_g_config.baseline);
+    }
+
+    zap__exit_code = zap_g_config.has_regression ? 1 : 0;
+    return zap__exit_code;
+}
+
+static void zap__finalize_atexit(void) {
+    zap_finalize();
+}
+
 void zap_parse_args(int argc, char** argv) {
     // Default: auto-compare and auto-save to .zap/baseline
     const char* default_baseline = ".zap/baseline";
@@ -2456,6 +2320,7 @@ void zap_parse_args(int argc, char** argv) {
         if (!zap_g_config.json_output) {
             printf("%s%sBenchmarks:%s\n", zap__c_bold(), zap__c_magenta(), zap__c_reset());
         }
+        atexit(zap__finalize_atexit);
         return;
     }
 
@@ -2487,117 +2352,9 @@ void zap_parse_args(int argc, char** argv) {
         // Text only shows env with --env flag
         zap_env_print(&zap_g_config.env);
     }
-}
 
-/* UPDATED RUNNER WITH COMPARISON SUPPORT */
-
-static const char* zap__current_group_name = NULL;  // Track current group for dry-run
-
-static void zap_run_bench_internal(const zap_bench_t* bench) {
-    // Check filter before running
-    if (!zap_matches_filter(bench->name, zap_g_config.filter)) {
-        return;
-    }
-
-    // Dry run mode: just print the benchmark name
-    if (zap_g_config.dry_run) {
-        zap__print_dry_run(zap__current_group_name, bench->name);
-        return;
-    }
-
-    zap_t c;
-    zap_init(&c, bench->name);
-
-    // Run the benchmark function
-    bench->func(&c);
-
-    // Warn if time limit was reached before collecting all samples
-    if (!zap_g_config.json_output && c.sample_count < c.config.sample_count) {
-        printf("%sWarning: time limit reached, collected %zu/%zu samples%s\n",
-               zap__c_yellow(), c.sample_count, c.config.sample_count, zap__c_reset());
-    }
-
-    // Compute statistics
-    zap_stats_t stats = zap_compute_stats(c.samples, c.sample_count);
-    stats.iterations = c.iterations;
-    stats.throughput_type = c.throughput_type;
-    stats.throughput_value = c.throughput_value;
-
-    // Build baseline key with group prefix to avoid collisions
-    char baseline_key[384];
-    if (zap__current_group_name && zap__current_group_name[0]) {
-        snprintf(baseline_key, sizeof(baseline_key), "%s/%s",
-                 zap__current_group_name, bench->name);
-    } else {
-        snprintf(baseline_key, sizeof(baseline_key), "%s", bench->name);
-    }
-
-    // Check if we should compare against baseline
-    zap_comparison_t cmp = {0};
-    const zap_baseline_entry_t* baseline = NULL;
-
-    if (zap_g_config.compare) {
-        baseline = zap_baseline_find(&zap_g_config.baseline, baseline_key);
-        if (baseline) {
-            cmp = zap_compare(baseline, &stats);
-
-            // Track regression for --fail-threshold
-            if (zap_g_config.fail_threshold > 0.0 &&
-                cmp.change == ZAP_REGRESSED &&
-                cmp.change_pct > zap_g_config.fail_threshold) {
-                zap_g_config.has_regression = true;
-            }
-        }
-    }
-
-    // Output results
-    if (zap_g_config.json_output) {
-        zap_report_json(bench->name, &stats, baseline ? &cmp : NULL);
-    } else if (baseline) {
-        zap_report_comparison(bench->name, &stats, &cmp);
-    } else if (zap_g_config.compare) {
-        printf("%s(new)%s ", zap__c_yellow(), zap__c_reset());
-        zap_report(bench->name, &stats);
-    } else {
-        zap_report(bench->name, &stats);
-    }
-
-    // Save to baseline if requested
-    if (zap_g_config.save_baseline) {
-        zap_baseline_add(&zap_g_config.baseline, baseline_key, &stats);
-    }
-
-    zap_cleanup(&c);
-}
-
-static void zap_run_group_internal(const zap_group_t* group) {
-    // Check if any benchmarks match the filter before printing header
-    size_t matching = 0;
-    if (zap_g_config.filter) {
-        for (size_t i = 0; i < group->count; i++) {
-            if (zap_matches_filter(group->benches[i].name, zap_g_config.filter)) {
-                matching++;
-            }
-        }
-        if (matching == 0) return;  // Skip group entirely
-    }
-
-    // Set current group for dry-run output
-    zap__current_group_name = group->name;
-
-    if (!zap_g_config.dry_run) {
-        zap_report_group_start(group->name);
-    }
-
-    for (size_t i = 0; i < group->count; i++) {
-        zap_run_bench_internal(&group->benches[i]);
-    }
-
-    if (!zap_g_config.dry_run) {
-        zap_report_group_end();
-    }
-
-    zap__current_group_name = NULL;
+    // Register auto-finalize - saves baseline and prints warnings at exit
+    atexit(zap__finalize_atexit);
 }
 
 /* COMPARISON API IMPLEMENTATION */
@@ -2715,7 +2472,7 @@ zap_compare_ctx_t* zap_compare_begin(zap_compare_group_t* g,
     return ctx;
 }
 
-void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_param_fn fn) {
+void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_bench_fn fn) {
     if (ctx->skipped) return;
     if (ctx->impl_count >= ZAP_MAX_IMPLS) return;
 
@@ -2732,35 +2489,30 @@ void zap_compare_impl(zap_compare_ctx_t* ctx, const char* name, zap_param_fn fn)
              ctx->id.label, ctx->id.param_str, name);
 
     // Initialize benchmark state
-    zap_t c;
-    zap__init_with_config(&c, bench_name, &g->config);
-
-    // Create bencher
-    zap_bencher_t b;
-    b.state = &c;
-    b.group = NULL;  // No runtime group
-    strncpy(b.full_name, bench_name, sizeof(b.full_name) - 1);
-    b.full_name[sizeof(b.full_name) - 1] = '\0';
+    zap_t z;
+    zap__init_with_config(&z, bench_name, &g->config);
+    z.param = ctx->input;
+    z.param_size = ctx->input_size;
 
     // Run the benchmark
-    fn(&b, ctx->input);
+    fn(&z);
 
     // Warn if time limit was reached
-    if (!zap_g_config.json_output && c.sample_count < c.config.sample_count) {
+    if (!zap_g_config.json_output && z.sample_count < z.config.sample_count) {
         printf("%sWarning: time limit reached, collected %zu/%zu samples%s\n",
-               zap__c_yellow(), c.sample_count, c.config.sample_count, zap__c_reset());
+               zap__c_yellow(), z.sample_count, z.config.sample_count, zap__c_reset());
     }
 
     // Compute stats
-    result->stats = zap_compute_stats(c.samples, c.sample_count);
-    result->stats.iterations = c.iterations;
-    result->stats.throughput_type = c.throughput_type;
-    result->stats.throughput_value = c.throughput_value;
+    result->stats = zap_compute_stats(z.samples, z.sample_count);
+    result->stats.iterations = z.iterations;
+    result->stats.throughput_type = z.throughput_type;
+    result->stats.throughput_value = z.throughput_value;
     result->valid = true;
 
     ctx->impl_count++;
 
-    zap_cleanup(&c);
+    zap_cleanup(&z);
 }
 
 void zap_compare_end(zap_compare_ctx_t* ctx) {
@@ -2970,41 +2722,6 @@ void zap_compare_group_finish(zap_compare_group_t* g) {
         printf("\n");
     }
     memset(g, 0, sizeof(*g));
-}
-
-static int zap_finalize(void) {
-    // Nothing to finalize in dry run mode
-    if (zap_g_config.dry_run) {
-        return 0;
-    }
-
-    // Save baseline if requested
-    if (zap_g_config.save_baseline && zap_g_config.baseline.count > 0) {
-        if (zap_baseline_save(&zap_g_config.baseline,
-                                    zap_g_config.baseline_path)) {
-            // Only print message for explicit path, not auto-save
-            if (!zap_g_config.json_output && zap_g_config.explicit_path) {
-                printf("%sBaseline saved to:%s %s%s%s\n",
-                       zap__c_purple(), zap__c_reset(),
-                       zap__c_cyan(), zap_g_config.baseline_path, zap__c_reset());
-            }
-        }
-    }
-
-    // Check for regressions beyond threshold
-    if (zap_g_config.has_regression) {
-        if (!zap_g_config.json_output) {
-            fprintf(stderr, "%sError: Benchmark regression exceeded threshold (%.1f%%)%s\n",
-                    zap__c_red(), zap_g_config.fail_threshold, zap__c_reset());
-        }
-    }
-
-    // Cleanup
-    if (zap_g_config.baseline.entries) {
-        zap_baseline_free(&zap_g_config.baseline);
-    }
-
-    return zap_g_config.has_regression ? 1 : 0;
 }
 
 #endif /* ZAP_IMPLEMENTATION */

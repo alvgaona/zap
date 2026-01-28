@@ -5,16 +5,16 @@
 #include <string.h>
 
 /* Example benchmark: Empty loop baseline */
-void bench_empty(zap_t* c) {
-    ZAP_LOOP(c) {
+void bench_empty(zap_t* z) {
+    ZAP_LOOP(z) {
         /* Empty - measures loop overhead */
     }
 }
 
 /* Example benchmark: Simple arithmetic */
-void bench_arithmetic(zap_t* c) {
+void bench_arithmetic(zap_t* z) {
     int x = 0;
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         x = x + 1;
         x = x * 2;
         x = x - 1;
@@ -35,28 +35,17 @@ static int fibonacci(int n) {
     return b;
 }
 
-void bench_fibonacci_10(zap_t* c) {
-    int n = 10;
-    zap_black_box(n);  /* Prevent compile-time evaluation */
+void bench_fibonacci(zap_t* z) {
+    int n = z->param ? *(int*)z->param : 10;
     int result;
-    ZAP_LOOP(c) {
-        result = fibonacci(n);
-        zap_black_box(result);
-    }
-}
-
-void bench_fibonacci_20(zap_t* c) {
-    int n = 20;
-    zap_black_box(n);  /* Prevent compile-time evaluation */
-    int result;
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         result = fibonacci(n);
         zap_black_box(result);
     }
 }
 
 /* Example benchmark: Pure computation (should produce Gaussian distribution) */
-void bench_compute(zap_t* c) {
+void bench_compute(zap_t* z) {
     /* Fixed-size computation with no system calls or allocations */
     double data[256];
     for (int i = 0; i < 256; i++) {
@@ -64,7 +53,7 @@ void bench_compute(zap_t* c) {
     }
     zap_black_box(data);
 
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         double sum = 0.0;
         for (int i = 0; i < 256; i++) {
             sum += data[i] * data[i];
@@ -74,17 +63,10 @@ void bench_compute(zap_t* c) {
 }
 
 /* Example benchmark: Memory allocation */
-void bench_malloc_small(zap_t* c) {
-    ZAP_LOOP(c) {
-        void* p = malloc(64);
-        zap_black_box(p);
-        free(p);
-    }
-}
-
-void bench_malloc_large(zap_t* c) {
-    ZAP_LOOP(c) {
-        void* p = malloc(65536);
+void bench_malloc(zap_t* z) {
+    size_t size = z->param ? *(size_t*)z->param : 64;
+    ZAP_LOOP(z) {
+        void* p = malloc(size);
         zap_black_box(p);
         free(p);
     }
@@ -93,15 +75,15 @@ void bench_malloc_large(zap_t* c) {
 /* Example benchmark: Memory copy with throughput reporting */
 #define COPY_SIZE (1024 * 1024)  /* 1 MB */
 
-void bench_memcpy_1mb(zap_t* c) {
+void bench_memcpy_1mb(zap_t* z) {
     char* src = (char*)malloc(COPY_SIZE);
     char* dst = (char*)malloc(COPY_SIZE);
     memset(src, 'x', COPY_SIZE);
 
     /* Set throughput: each iteration copies COPY_SIZE bytes */
-    zap_set_throughput_bytes(c, COPY_SIZE);
+    zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         memcpy(dst, src, COPY_SIZE);
         zap_black_box(dst);
     }
@@ -110,13 +92,13 @@ void bench_memcpy_1mb(zap_t* c) {
     free(dst);
 }
 
-void bench_memset_1mb(zap_t* c) {
+void bench_memset_1mb(zap_t* z) {
     char* dst = (char*)malloc(COPY_SIZE);
 
     /* Set throughput: each iteration writes COPY_SIZE bytes */
-    zap_set_throughput_bytes(c, COPY_SIZE);
+    zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         memset(dst, 'x', COPY_SIZE);
         zap_black_box(dst);
     }
@@ -124,12 +106,45 @@ void bench_memset_1mb(zap_t* c) {
     free(dst);
 }
 
-/* Define benchmark groups */
-ZAP_GROUP(overhead, bench_empty, bench_arithmetic);
-ZAP_GROUP(compute, bench_compute);
-ZAP_GROUP(fib_benches, bench_fibonacci_10, bench_fibonacci_20);
-ZAP_GROUP(memory, bench_malloc_small, bench_malloc_large);
-ZAP_GROUP(throughput_demo, bench_memcpy_1mb, bench_memset_1mb);
+ZAP_MAIN {
+    /* Overhead benchmarks */
+    zap_runtime_group_t* overhead = zap_benchmark_group("overhead");
+    zap_bench_function(overhead, "empty", bench_empty);
+    zap_bench_function(overhead, "arithmetic", bench_arithmetic);
+    zap_group_finish(overhead);
 
-/* Main entry point - runs all groups */
-ZAP_MAIN(overhead, compute, fib_benches, memory, throughput_demo);
+    /* Compute benchmark */
+    zap_runtime_group_t* compute = zap_benchmark_group("compute");
+    zap_bench_function(compute, "compute", bench_compute);
+    zap_group_finish(compute);
+
+    /* Fibonacci with different input sizes */
+    zap_runtime_group_t* fib = zap_benchmark_group("fibonacci");
+    int fib_sizes[] = {10, 20, 30};
+    for (size_t i = 0; i < sizeof(fib_sizes)/sizeof(fib_sizes[0]); i++) {
+        zap_bench_with_input(fib, zap_benchmark_id("fib", fib_sizes[i]),
+                             &fib_sizes[i], sizeof(int), bench_fibonacci);
+    }
+    zap_group_finish(fib);
+
+    /* Memory allocation with different sizes */
+    zap_runtime_group_t* memory = zap_benchmark_group("memory");
+    size_t malloc_sizes[] = {64, 1024, 65536};
+    for (size_t i = 0; i < sizeof(malloc_sizes)/sizeof(malloc_sizes[0]); i++) {
+        char label[32];
+        if (malloc_sizes[i] >= 1024) {
+            snprintf(label, sizeof(label), "%zuKB", malloc_sizes[i] / 1024);
+        } else {
+            snprintf(label, sizeof(label), "%zuB", malloc_sizes[i]);
+        }
+        zap_bench_with_input(memory, zap_benchmark_id_str("malloc", label),
+                             &malloc_sizes[i], sizeof(size_t), bench_malloc);
+    }
+    zap_group_finish(memory);
+
+    /* Throughput demo */
+    zap_runtime_group_t* throughput = zap_benchmark_group("throughput");
+    zap_bench_function(throughput, "memcpy_1mb", bench_memcpy_1mb);
+    zap_bench_function(throughput, "memset_1mb", bench_memset_1mb);
+    zap_group_finish(throughput);
+}

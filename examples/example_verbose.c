@@ -19,14 +19,14 @@
 /* Benchmark: memory copy */
 #define COPY_SIZE 4096
 
-void bench_memcpy(zap_t* c) {
+void bench_memcpy(zap_t* z) {
     char* src = (char*)malloc(COPY_SIZE);
     char* dst = (char*)malloc(COPY_SIZE);
     memset(src, 'x', COPY_SIZE);
 
-    zap_set_throughput_bytes(c, COPY_SIZE);
+    zap_set_throughput_bytes(z, COPY_SIZE);
 
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         memcpy(dst, src, COPY_SIZE);
         zap_black_box(dst);
     }
@@ -36,14 +36,14 @@ void bench_memcpy(zap_t* c) {
 }
 
 /* Benchmark: computation */
-void bench_compute(zap_t* c) {
+void bench_compute(zap_t* z) {
     double data[64];
     for (int i = 0; i < 64; i++) {
         data[i] = (double)i * 0.01;
     }
     zap_black_box(data);
 
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         double sum = 0.0;
         for (int i = 0; i < 64; i++) {
             sum += data[i] * data[i];
@@ -52,5 +52,9 @@ void bench_compute(zap_t* c) {
     }
 }
 
-ZAP_GROUP(verbose_benches, bench_memcpy, bench_compute);
-ZAP_MAIN(verbose_benches);
+ZAP_MAIN {
+    zap_runtime_group_t* g = zap_benchmark_group("verbose_benches");
+    zap_bench_function(g, "bench_memcpy", bench_memcpy);
+    zap_bench_function(g, "bench_compute", bench_compute);
+    zap_group_finish(g);
+}

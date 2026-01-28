@@ -13,14 +13,17 @@
 #define ZAP_IMPLEMENTATION
 #include "zap.h"
 
-void bench_example(zap_t* c) {
+void bench_example(zap_t* z) {
     int x = 0;
-    ZAP_LOOP(c) {
+    ZAP_LOOP(z) {
         x = x + 1;
         x = x * 2;
         zap_black_box(x);
     }
 }
 
-ZAP_GROUP(quick_benches, bench_example);
-ZAP_MAIN(quick_benches);
+ZAP_MAIN {
+    zap_runtime_group_t* g = zap_benchmark_group("quick_benches");
+    zap_bench_function(g, "bench_example", bench_example);
+    zap_group_finish(g);
+}
