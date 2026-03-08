@@ -34,6 +34,19 @@ gcc -O2 -o bench bench.c -lm
 ./bench
 ```
 
+## Sample Output
+
+```
+bench_example:
+  20 samples × 1076000 evals, median: 1.003 ns
+  Time  (mean ± σ):  1.017 ns ± 0.044 ns
+  Range (min … max):  0.975 ns … 1.110 ns
+
+   █
+  ▆█ ▁▆    ▁  ▁  ▁ ▆        ▁            ▆   ▁  ▁       ▁
+  0.98 ns       Histogram: frequency by time       1.11 ns
+```
+
 ## Features
 
 - High-precision timing (mach_time on macOS, clock_gettime on Linux)
