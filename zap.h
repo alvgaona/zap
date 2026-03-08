@@ -30,11 +30,16 @@
  *       zap_group_finish(g);
  *   }
  *
- * LICENSE: MIT (see end of file)
+ * LICENSE: Apache-2.0 (see LICENSE file)
  */
 
 #ifndef ZAP_H
 #define ZAP_H
+
+#define ZAP_VERSION_MAJOR 0
+#define ZAP_VERSION_MINOR 3
+#define ZAP_VERSION_PATCH 0
+#define ZAP_VERSION "0.3.0"
 
 #ifdef __cplusplus
 extern "C" {
@@ -2775,26 +2780,4 @@ void zap_compare_group_finish(zap_compare_group_t* g) {
 
 #endif /* ZAP_H */
 
-/*
- * MIT License
- *
- * Copyright (c) 2024
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* Licensed under Apache-2.0. See LICENSE file for details. */

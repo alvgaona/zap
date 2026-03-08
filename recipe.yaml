@@ -1,0 +1,32 @@
+context:
+  name: zap
+  version: "0.3.0"
+
+package:
+  name: ${{ name }}
+  version: ${{ version }}
+
+source:
+  url: https://github.com/alvgaona/${{ name }}/archive/v${{ version }}.tar.gz
+  sha256: ${{ env.get("ARCHIVE_SHA256") }}
+
+build:
+  number: 0
+  noarch: generic
+  skip:
+    - win
+  script:
+    - mkdir -p $PREFIX/include
+    - cp zap.h $PREFIX/include/zap.h
+
+tests:
+  - package_contents:
+      include:
+        - zap.h
+
+about:
+  homepage: https://github.com/alvgaona/zap
+  license: Apache-2.0
+  license_file: LICENSE
+  summary: STB-style single-header benchmarking library for C
+  repository: https://github.com/alvgaona/zap

@@ -2,4 +2,11 @@
 
 # C
 build/
-CLAUDE.md
+output/
+
+# Markdown (except README)
+*.md
+!README.md
+
+# Claude
+.claude/
